@@ -13,8 +13,8 @@ pccs = { workspace = true }
 mock-tdx = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-rustls = { workspace = true, default-features = false }
-attest-types = { git = "https://github.com/easy-tee/attest.git", branch = "ah/gcp-hobgen" }
-attest-measure = {git = "https://github.com/easy-tee/attest.git", branch = "ah/gcp-hobgen" }
+attest-types = { git = "https://github.com/easy-tee/attest.git", rev = "a64f147362b8948e2288015e476c40d04b11b661" }
+attest-measure = {git = "https://github.com/easy-tee/attest.git", rev = "a64f147362b8948e2288015e476c40d04b11b661" }
 
 anyhow = "1.0.100"
 pem-rfc7468 = { version = "0.7.0", features = ["std"] }
