@@ -276,6 +276,10 @@ pub enum MeasurementFormatError {
     NoExpectedValue(String),
     #[error("Measurement entry for register '{0}' has empty 'expected_any' list")]
     EmptyExpectedAny(String),
+    #[error("Measurement record has both 'measurements' and 'dcap_image_hashes' — set only one")]
+    BothMeasurementsAndDcapImageHashes,
+    #[error("Attestation type '{0}' does not support 'dcap_image_hashes'")]
+    DcapImageHashesUnsupportedAttestationType(String),
 }
 
 /// An accepted measurement value given in the measurements file
@@ -556,6 +560,9 @@ impl MeasurementPolicy {
             measurement_id: Option<String>,
             attestation_type: String,
             measurements: Option<HashMap<String, MeasurementEntry>>,
+            /// Image-component hashes for "portable" verification.
+            /// Mutually exclusive with `measurements`.
+            dcap_image_hashes: Option<DcapImageHashes>,
         }
 
         /// Measurement entry for a single register in the measurements JSON
@@ -614,11 +621,14 @@ impl MeasurementPolicy {
         let mut measurement_policy = Vec::new();
 
         for record in records_simple {
-            let attestation_type =
-                serde_json::from_value(serde_json::Value::String(record.attestation_type))?;
+            let attestation_type: AttestationType =
+                serde_json::from_value(serde_json::Value::String(record.attestation_type.clone()))?;
 
-            if let Some(measurements) = record.measurements {
-                let expected_measurements = match attestation_type {
+            let expected_measurements = match (record.measurements, record.dcap_image_hashes) {
+                (Some(_), Some(_)) => {
+                    return Err(MeasurementFormatError::BothMeasurementsAndDcapImageHashes);
+                }
+                (Some(measurements), None) => match attestation_type {
                     AttestationType::None => ExpectedMeasurements::NoAttestation,
                     AttestationType::AzureTdx => {
                         let azure_measurements = measurements
@@ -647,15 +657,33 @@ impl MeasurementPolicy {
                                 MeasurementFormatError,
                             >>()?,
                     ),
-                };
-
-                measurement_policy.push(MeasurementRecord {
-                    measurement_id: record.measurement_id.unwrap_or_default(),
-                    measurements: expected_measurements,
-                });
-            } else {
-                measurement_policy.push(MeasurementRecord::allow_any_measurement(attestation_type));
+                },
+                (None, Some(image_hashes)) => match attestation_type {
+                    // Currently only GCP is supported for portable measurement policy - but support
+                    // for other types is planned
+                    AttestationType::GcpTdx => ExpectedMeasurements::Image(image_hashes),
+                    AttestationType::DcapTdx |
+                    AttestationType::QemuTdx |
+                    AttestationType::None |
+                    AttestationType::AzureTdx => {
+                        return Err(
+                            MeasurementFormatError::DcapImageHashesUnsupportedAttestationType(
+                                record.attestation_type,
+                            ),
+                        );
+                    }
+                },
+                (None, None) => {
+                    measurement_policy
+                        .push(MeasurementRecord::allow_any_measurement(attestation_type));
+                    continue;
+                }
             };
+
+            measurement_policy.push(MeasurementRecord {
+                measurement_id: record.measurement_id.unwrap_or_default(),
+                measurements: expected_measurements,
+            });
         }
 
         Ok(MeasurementPolicy { accepted_measurements: measurement_policy })
@@ -886,6 +914,86 @@ mod tests {
         } else {
             panic!("Expected ExpectedMeasurements::Dcap");
         }
+    }
+
+    /// A JSON policy that pins image-component hashes rather than raw
+    /// register values must parse into [`ExpectedMeasurements::Image`]
+    /// so the verifier can reconstruct the expected RTMRs from platform
+    /// metadata and firmware
+    #[tokio::test]
+    async fn test_parse_image_hash_policy() {
+        let json = r#"[
+            {
+                "measurement_id": "gcp-image-hash-example",
+                "attestation_type": "gcp-tdx",
+                "dcap_image_hashes": {
+                    "uki_authenticode": "fcaceb6d87694746ba2d93a87ef4209f2a7629b7f400097b93241e80b9ec3e1e80f9a4cd8028e6a83f297ea5de8d9abc",
+                    "kernel_authenticode": "b6c5133268aa8b440509f3d53ee855a5cd3aeb6441eb109a9f27f14c43bce3e2383856df4af876501ceeb4c9a3b15f0c",
+                    "cmdline_hash": "e03b89abf354a38976537b7a9138fd312e4cbf73b61eebc44086491701b1d167b9f6cb97a922325866c93e0834723d87",
+                    "initrd_hash": "a5b3d4742045e7d08aa19953c35098e784826b01a84f60568fa69f1a848dafd96ec98b8df616d6142779c9b97318166b",
+                    "gpt_disk_guid_hash": "180bac1af9c35cc15e909623c005289539b4da2840d9c9b658fd4968ea4f03e0159402d03da1afc9035e0db30804e282"
+                }
+            }
+        ]"#;
+
+        let policy = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 1);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Image(_)
+        ));
+    }
+
+    /// A record cannot specify both raw register values and image-component
+    /// hashes as they express the same intent through different schemas.
+    #[tokio::test]
+    async fn test_parse_rejects_both_measurements_and_dcap_image_hashes() {
+        let json = r#"[
+            {
+                "attestation_type": "gcp-tdx",
+                "measurements": {
+                    "mrtd": {
+                        "expected_any": [
+                            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                        ]
+                    }
+                },
+                "dcap_image_hashes": {
+                    "uki_authenticode": "fcaceb6d87694746ba2d93a87ef4209f2a7629b7f400097b93241e80b9ec3e1e80f9a4cd8028e6a83f297ea5de8d9abc",
+                    "kernel_authenticode": "b6c5133268aa8b440509f3d53ee855a5cd3aeb6441eb109a9f27f14c43bce3e2383856df4af876501ceeb4c9a3b15f0c",
+                    "cmdline_hash": "e03b89abf354a38976537b7a9138fd312e4cbf73b61eebc44086491701b1d167b9f6cb97a922325866c93e0834723d87",
+                    "initrd_hash": "a5b3d4742045e7d08aa19953c35098e784826b01a84f60568fa69f1a848dafd96ec98b8df616d6142779c9b97318166b",
+                    "gpt_disk_guid_hash": "180bac1af9c35cc15e909623c005289539b4da2840d9c9b658fd4968ea4f03e0159402d03da1afc9035e0db30804e282"
+                }
+            }
+        ]"#;
+
+        let result = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec());
+        assert!(matches!(result, Err(MeasurementFormatError::BothMeasurementsAndDcapImageHashes)));
+    }
+
+    /// Using one of the not yet supported attestation types with
+    /// dcap_image_hashes fails
+    #[tokio::test]
+    async fn test_parse_rejects_unsupported_attestation_type_for_image_hashes() {
+        let json = r#"[
+            {
+                "attestation_type": "azure-tdx",
+                "dcap_image_hashes": {
+                    "uki_authenticode": "fcaceb6d87694746ba2d93a87ef4209f2a7629b7f400097b93241e80b9ec3e1e80f9a4cd8028e6a83f297ea5de8d9abc",
+                    "kernel_authenticode": "b6c5133268aa8b440509f3d53ee855a5cd3aeb6441eb109a9f27f14c43bce3e2383856df4af876501ceeb4c9a3b15f0c",
+                    "cmdline_hash": "e03b89abf354a38976537b7a9138fd312e4cbf73b61eebc44086491701b1d167b9f6cb97a922325866c93e0834723d87",
+                    "initrd_hash": "a5b3d4742045e7d08aa19953c35098e784826b01a84f60568fa69f1a848dafd96ec98b8df616d6142779c9b97318166b",
+                    "gpt_disk_guid_hash": "180bac1af9c35cc15e909623c005289539b4da2840d9c9b658fd4968ea4f03e0159402d03da1afc9035e0db30804e282"
+                }
+            }
+        ]"#;
+
+        let result = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec());
+        assert!(matches!(
+            result,
+            Err(MeasurementFormatError::DcapImageHashesUnsupportedAttestationType(_))
+        ));
     }
 
     #[tokio::test]
