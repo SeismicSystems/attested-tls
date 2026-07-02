@@ -439,8 +439,16 @@ impl MeasurementPolicy {
                                     }
                                 }
                             }
-                            ImageAttestationType::SelfHostedTdx => None,
-                            ImageAttestationType::AzureTdx => return false,
+                            // These may be supported in the future but currently regarded as too
+                            // experimental to work with 'portable' measurement policies
+                            ImageAttestationType::SelfHostedTdx => {
+                                warn!("Attempting to match portable measurement policy with bare metal TDX - not yet supported");
+                                return false;
+                            },
+                            ImageAttestationType::AzureTdx => {
+                                warn!("Attempting to match portable measurement policy with Azure TDX - not yet supported");
+                                return false;
+                            },
                         };
 
                         let expected_measurements = match expected_dcap_registers(
