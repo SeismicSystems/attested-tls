@@ -536,25 +536,13 @@ impl AttestedCertificateVerifier {
             ra_tls::attestation::from_cert(cert) &&
             let AttestationQuote::DstackTdx(tdx_quote) = attestation.quote
         {
-            if let Ok(message) =
-                serde_json::from_slice::<AttestationExchangeMessage>(&tdx_quote.quote)
-            {
-                return Ok(message);
-            }
-
-            // TODO maybe we have to drop support for the VersionedAttestation::V0
-            // format as it cannot encode platform metadata
-            return Ok(AttestationExchangeMessage {
-                attestation_evidence: Some(AttestationEvidence {
-                    quote: tdx_quote.quote,
-                    platform: PlatformMetadata {
-                        attestation_type: AttestationType::DcapTdx.try_into().expect("AttestationType::DcapTdx should convert to attest-types::AttestationType::SelfHosted"),
-                        ram_bytes: 0,
-                        num_disks: 0,
-                        acpi: None,
-                    },
-                }),
-            });
+            return serde_json::from_slice::<AttestationExchangeMessage>(&tdx_quote.quote).map_err(
+                |err| {
+                    rustls::Error::General(format!(
+                        "Failed to parse AttestationExchangeMessage: {err:?}"
+                    ))
+                },
+            );
         }
 
         // If that fails, extract and parse the extension

@@ -106,19 +106,6 @@ impl TryFrom<AttestationType> for attest_types::AttestationType {
     }
 }
 
-/// WIP - create placeholder platform metadata when we don't have it.
-/// Used for attestation provider server - which should be fixed.
-fn placeholder_platform_metadata(
-    attestation_type: AttestationType,
-) -> Result<PlatformMetadata, AttestationError> {
-    Ok(PlatformMetadata {
-        attestation_type: attestation_type.try_into()?,
-        ram_bytes: 0,
-        num_disks: 0,
-        acpi: None,
-    })
-}
-
 /// Type of attestation used
 /// Only supported (or soon-to-be supported) types are given
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -284,7 +271,7 @@ impl AttestationGenerator {
                 }
                 AttestationType::DcapTdx | AttestationType::GcpTdx | AttestationType::QemuTdx => {
                     #[cfg(any(test, feature = "mock"))]
-                    let platform = placeholder_platform_metadata(self.attestation_type)?;
+                    let platform = mock_platform_metadata(self.attestation_type)?;
                     #[cfg(not(any(test, feature = "mock")))]
                     let platform =
                         attest_measure::platform::metadata_for(self.attestation_type.try_into()?)?;
@@ -306,6 +293,10 @@ impl AttestationGenerator {
         attestation_type: AttestationType,
         input_data: [u8; 64],
     ) -> Result<AttestationExchangeMessage, AttestationError> {
+        if attestation_type == AttestationType::None {
+            return Ok(AttestationExchangeMessage::without_attestation());
+        }
+
         let url = format!("{}/attest/{}", url, hex::encode(input_data));
 
         let mut response = ureq::get(&url)
@@ -318,20 +309,8 @@ impl AttestationGenerator {
             .read_to_end(&mut body)
             .map_err(|err| AttestationError::AttestationProvider(err.to_string()))?;
 
-        // If the response is not already wrapped in an attestation exchange
-        // message, wrap it in one
-        if let Ok(message) = AttestationExchangeMessage::decode(&mut &body[..]) {
-            Ok(message)
-        } else {
-            if attestation_type == AttestationType::None {
-                return Ok(AttestationExchangeMessage::without_attestation());
-            }
-
-            let platform = placeholder_platform_metadata(attestation_type)?;
-            Ok(AttestationExchangeMessage {
-                attestation_evidence: Some(AttestationEvidence { quote: body, platform }),
-            })
-        }
+        AttestationExchangeMessage::decode(&mut &body[..])
+            .map_err(|err| AttestationError::AttestationProvider(err.to_string()))
     }
 }
 
@@ -694,6 +673,19 @@ fn is_local_ip(ip: IpAddr) -> bool {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
+/// Create mock platform metadata for tests
+pub fn mock_platform_metadata(
+    attestation_type: AttestationType,
+) -> Result<PlatformMetadata, AttestationError> {
+    Ok(PlatformMetadata {
+        attestation_type: attestation_type.try_into()?,
+        ram_bytes: 0,
+        num_disks: 0,
+        acpi: None,
+    })
+}
+
 /// An error when generating or verifying an attestation
 #[derive(Error, Debug)]
 pub enum AttestationError {
@@ -742,34 +734,8 @@ pub enum AttestationError {
 #[cfg(test)]
 mod tests {
     use mock_tdx::mock_pcs::{MockPcsConfig, spawn_mock_pcs_server};
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
 
     use super::*;
-
-    async fn spawn_test_attestation_provider_server(body: Vec<u8>) -> std::net::SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            if let Ok((mut socket, _)) = listener.accept().await {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.write_all(&body).await;
-                let _ = socket.shutdown().await;
-            }
-        });
-
-        addr
-    }
 
     #[test]
     fn attestation_detection_does_not_panic() {
@@ -783,48 +749,13 @@ mod tests {
         let _ = running_on_gcp();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn attestation_provider_response_is_wrapped_if_needed() {
-        let input_data = [0u8; 64];
-
-        let encoded_message = AttestationExchangeMessage {
-            attestation_evidence: Some(AttestationEvidence {
-                quote: vec![1, 2, 3],
-                platform: placeholder_platform_metadata(AttestationType::GcpTdx).unwrap(),
-            }),
-        }
-        .encode();
-
-        let encoded_addr = spawn_test_attestation_provider_server(encoded_message).await;
-        let encoded_url = format!("http://{encoded_addr}");
-        let decoded = AttestationGenerator::use_attestation_provider(
-            &encoded_url,
-            AttestationType::GcpTdx,
-            input_data,
-        )
-        .unwrap();
-        assert_eq!(decoded.attestation_type(), AttestationType::GcpTdx);
-        assert_eq!(decoded.attestation_evidence.unwrap().quote, vec![1, 2, 3]);
-
-        let raw_addr = spawn_test_attestation_provider_server(vec![9, 8]).await;
-        let raw_url = format!("http://{raw_addr}");
-        let wrapped = AttestationGenerator::use_attestation_provider(
-            &raw_url,
-            AttestationType::DcapTdx,
-            input_data,
-        )
-        .unwrap();
-        assert_eq!(wrapped.attestation_type(), AttestationType::QemuTdx);
-        assert_eq!(wrapped.attestation_evidence.unwrap().quote, vec![9, 8]);
-    }
-
     #[tokio::test]
     async fn mock_verifier_supports_sync_verification() {
         let input_data = [7u8; 64];
         let quote = dcap::create_dcap_attestation(input_data).unwrap();
         let attestation_evidence = AttestationEvidence {
             quote,
-            platform: placeholder_platform_metadata(AttestationType::GcpTdx).unwrap(),
+            platform: mock_platform_metadata(AttestationType::GcpTdx).unwrap(),
         };
 
         let mock_pcs_server = spawn_mock_pcs_server(MockPcsConfig::default()).await.unwrap();
