@@ -2,7 +2,7 @@
 //! attestation
 use std::{collections::HashMap, fmt, fmt::Formatter, net::IpAddr, path::PathBuf};
 
-use attest_measure::dcap::{DcapFirmware, expected_dcap_registers};
+use attest_measure::dcap::expected_dcap_registers;
 use attest_types::{AttestationType as ImageAttestationType, DcapImageHashes, PlatformMetadata};
 use dcap_qvl::quote::Report;
 use http::{HeaderValue, header::InvalidHeaderValue, uri::InvalidUri};
@@ -14,7 +14,7 @@ use crate::{
     AttestationError,
     AttestationType,
     dcap::DcapVerificationError,
-    gcp::{GcpFirmwareCache, GcpFirmwareCacheError},
+    gcp::{GcpFirmwareCache, fetch_firmware},
 };
 
 /// Represents the measurement register types in a TDX quote
@@ -433,8 +433,7 @@ impl MeasurementPolicy {
                                 let result = if let Some(cache) = known_gcp_firmware {
                                     cache.get_or_fetch(*mrtd)
                                 } else {
-                                    DcapFirmware::from_google(*mrtd)
-                                        .map_err(GcpFirmwareCacheError::from)
+                                    fetch_firmware(*mrtd)
                                 };
                                 match result {
                                     Ok(firmware) => Some(firmware),
@@ -506,7 +505,7 @@ impl MeasurementPolicy {
 
                         true
                     }
-                    _ => false,
+                    ExpectedMeasurements::Azure(_) | ExpectedMeasurements::NoAttestation => false,
                 }
             }
             MultiMeasurements::Azure(azure_measurements) => {
@@ -719,7 +718,7 @@ impl MeasurementPolicy {
 mod tests {
     use std::collections::HashSet;
 
-    use attest_measure::dcap::expected_dcap_registers;
+    use attest_measure::dcap::{DcapFirmware, expected_dcap_registers};
     use attest_types::AcpiHashes;
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 

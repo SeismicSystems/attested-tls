@@ -295,5 +295,5 @@ Portable policies currently only work with the `"gcp-tdx"` attestation type.
 For GCP, the verifier fetches the platform firmware blob from Google's metadata
 service (keyed by MRTD) and combines it with the image hashes to reconstruct
 the expected registers. Support for other attestation types is planned; but
-`dcap_image_hashes` record with any other attestation type is rejected at when
+`dcap_image_hashes` record with any other attestation type is rejected when
 parsing from JSON.

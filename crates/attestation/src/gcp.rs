@@ -29,12 +29,32 @@ impl GcpFirmwareCache {
             return Ok(firmware);
         }
 
-        let firmware = DcapFirmware::from_google(mrtd)?;
+        let firmware = fetch_firmware(mrtd)?;
         self.cache
             .write()
             .map_err(|_| GcpFirmwareCacheError::CacheLock)?
             .insert(mrtd, firmware.clone());
         Ok(firmware)
+    }
+}
+
+/// Fetch firmware from Google. If we are running inside a mutli-threaded
+/// tokio runtime the blocking HTTP fetch is wrapped in `spawn_blocking`
+pub(crate) fn fetch_firmware(mrtd: [u8; 48]) -> Result<DcapFirmware, GcpFirmwareCacheError> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) =>
+        {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    tokio::task::spawn_blocking(move || DcapFirmware::from_google(mrtd))
+                        .await
+                        .map_err(|err| GcpFirmwareCacheError::Join(err.to_string()))?
+                        .map_err(GcpFirmwareCacheError::from)
+                })
+            })
+        }
+        _ => DcapFirmware::from_google(mrtd).map_err(GcpFirmwareCacheError::from),
     }
 }
 
@@ -44,6 +64,8 @@ pub(crate) enum GcpFirmwareCacheError {
     CacheLock,
     #[error("Firmware fetch: {0}")]
     Firmware(#[from] attest_measure::dcap::GoogleError),
+    #[error("Firmware fetch task join: {0}")]
+    Join(String),
 }
 
 #[cfg(test)]
