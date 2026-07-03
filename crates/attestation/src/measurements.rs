@@ -393,6 +393,9 @@ impl MeasurementPolicy {
         self.check_measurement_with_gcp_cache(measurements, platform_metadata, None)
     }
 
+    /// Given an attestation type and set of measurements, check whether
+    /// they are acceptable, passing an optional cache for known GCP
+    /// firmware
     pub(crate) fn check_measurement_with_gcp_cache(
         &self,
         measurements: &MultiMeasurements,
@@ -463,7 +466,7 @@ impl MeasurementPolicy {
                             Ok(expected) => expected,
                             Err(err) => {
                                 warn!("Failed to compute expected DCAP registers: {err:?}");
-                                return false; // TODO should we bail here
+                                return false;
                             }
                         };
 
@@ -472,6 +475,10 @@ impl MeasurementPolicy {
                                 Some(mrtd) if mrtd == &expected_mrtd => {}
                                 _ => return false,
                             }
+                        } else {
+                            // This will only be the case with SelfHostedTdx which currently would
+                            // already bail with the check above
+                            return false;
                         }
 
                         if let Some(expected_rtmr0) = expected_measurements.rtmr0 {
@@ -479,6 +486,10 @@ impl MeasurementPolicy {
                                 Some(rtmr0) if rtmr0 == &expected_rtmr0 => {}
                                 _ => return false,
                             }
+                        } else {
+                            // This will only be the case with SelfHostedTdx which currently would
+                            // already bail with the check above
+                            return false;
                         }
 
                         if let Some(rtmr1) = dcap_measurements.get(&DcapMeasurementRegister::RTMR1)
