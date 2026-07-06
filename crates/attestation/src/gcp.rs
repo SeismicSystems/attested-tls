@@ -17,8 +17,11 @@ const GCP_PROVENANCE_REGISTRY_URL: &str =
 const GCP_PROVENANCE_DOCUMENT_MAX_BYTES: u64 = 16 * 1024;
 /// How long a cached PPID remains trusted before revalidation
 const GCP_PROVENANCE_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Overall timeout for fetching a provenance document (covers DNS, connect,
+/// TLS handshake and read)
+const GCP_PROVENANCE_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Checks PPIDs extracted from DCAP quotes against Googles public bucket,
+/// Checks PPIDs extracted from DCAP quotes against Google's public bucket,
 /// to establish whether this is a GCP machine
 #[derive(Clone, Debug)]
 pub(crate) struct GcpProvenanceChecker {
@@ -33,18 +36,29 @@ impl GcpProvenanceChecker {
 
     /// Given a DCAP TDX quote, check if the associated PPID has a
     /// 'provenance document' from GCP
+    ///
+    /// If a tokio runtime is available the blocking fetch is offloaded to
+    /// its blocking pool; otherwise it runs inline on the current thread.
     pub(crate) async fn verify_provenance(&self, quote: Quote) -> Result<(), GcpProvenanceError> {
-        let now = Instant::now();
-        let checker = self.clone();
-        tokio::task::spawn_blocking(move || {
-            checker.verify_provenance_with_registry_url_sync_at(
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let checker = self.clone();
+            handle
+                .spawn_blocking(move || {
+                    checker.verify_provenance_with_registry_url_sync_at(
+                        &quote,
+                        GCP_PROVENANCE_REGISTRY_URL,
+                        Instant::now(),
+                    )
+                })
+                .await
+                .map_err(|err| GcpProvenanceError::TaskJoin(err.to_string()))?
+        } else {
+            self.verify_provenance_with_registry_url_sync_at(
                 &quote,
                 GCP_PROVENANCE_REGISTRY_URL,
-                now,
+                Instant::now(),
             )
-        })
-        .await
-        .map_err(|err| GcpProvenanceError::TaskJoin(err.to_string()))?
+        }
     }
 
     /// Given a DCAP TDX quote, check if the associated PPID has a
@@ -125,7 +139,7 @@ fn extract_ppid_from_quote(quote: &Quote) -> Result<Vec<u8>, GcpProvenanceError>
 }
 
 fn fetch_provenance_document(url: &str) -> Result<String, GcpProvenanceError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build();
+    let agent = ureq::AgentBuilder::new().timeout(GCP_PROVENANCE_FETCH_TIMEOUT).build();
     let response =
         agent.get(url).call().map_err(|err| GcpProvenanceError::RegistryFetch(err.to_string()))?;
 
