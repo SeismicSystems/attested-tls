@@ -43,21 +43,11 @@ impl GcpProvenanceChecker {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let checker = self.clone();
             handle
-                .spawn_blocking(move || {
-                    checker.verify_provenance_with_registry_url_sync_at(
-                        &quote,
-                        GCP_PROVENANCE_REGISTRY_URL,
-                        Instant::now(),
-                    )
-                })
+                .spawn_blocking(move || checker.verify_provenance_sync(&quote))
                 .await
                 .map_err(|err| GcpProvenanceError::TaskJoin(err.to_string()))?
         } else {
-            self.verify_provenance_with_registry_url_sync_at(
-                &quote,
-                GCP_PROVENANCE_REGISTRY_URL,
-                Instant::now(),
-            )
+            self.verify_provenance_sync(&quote)
         }
     }
 
@@ -90,18 +80,18 @@ impl GcpProvenanceChecker {
             }
         }
 
+        // Re-check under the write lock in case another thread refreshed the
+        // entry while we were waiting, and drop stale entries so we refetch.
         {
             let mut known_gcp_ppids = self
                 .known_gcp_ppids
                 .write()
                 .map_err(|err| GcpProvenanceError::CacheLock(err.to_string()))?;
-            if known_gcp_ppids
-                .get(&ppid)
-                .is_some_and(|stored_at| !is_cache_entry_fresh(*stored_at, now))
-            {
+            if let Some(stored_at) = known_gcp_ppids.get(&ppid) {
+                if is_cache_entry_fresh(*stored_at, now) {
+                    return Ok(());
+                }
                 known_gcp_ppids.remove(&ppid);
-            } else if known_gcp_ppids.contains_key(&ppid) {
-                return Ok(());
             }
         }
 
