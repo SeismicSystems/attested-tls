@@ -1,3 +1,5 @@
+//! Google Cloud Platform specific attestation logic
+
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},

@@ -243,45 +243,6 @@ pub fn mock_dcap_measurements() -> MultiMeasurements {
     ]))
 }
 
-/// An error when converting measurements / to or from HTTP header format
-#[derive(Error, Debug)]
-pub enum MeasurementFormatError {
-    #[error("JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("Missing value: {0}")]
-    MissingValue(String),
-    #[error("Invalid header value: {0}")]
-    BadHeaderValue(#[from] InvalidHeaderValue),
-    #[error("IO: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Attestation type not valid")]
-    AttestationTypeNotValid,
-    #[error("Hex: {0}")]
-    Hex(#[from] hex::FromHexError),
-    #[error("Expected 48 byte value")]
-    BadLength,
-    #[error("TDX quote register index must be in the ranger 0-3")]
-    BadRegisterIndex,
-    #[error("ParseInt: {0}")]
-    ParseInt(#[from] std::num::ParseIntError),
-    #[error("Failed to read measurements from URL: {0}")]
-    Reqwest(#[from] reqwest::Error),
-    #[error("Invalid URL: {0}")]
-    InvalidUri(#[from] InvalidUri),
-    #[error("Refusing to load measurement policy over plain HTTP from non-loopback host: {0}")]
-    InsecureHttpNotLoopback(String),
-    #[error("Measurement entry for register '{0}' has both 'expected' and 'expected_any'")]
-    BothExpectedAndExpectedAny(String),
-    #[error("Measurement entry for register '{0}' has neither 'expected' nor 'expected_any'")]
-    NoExpectedValue(String),
-    #[error("Measurement entry for register '{0}' has empty 'expected_any' list")]
-    EmptyExpectedAny(String),
-    #[error("Measurement record has both 'measurements' and 'dcap_image_hashes' — set only one")]
-    BothMeasurementsAndDcapImageHashes,
-    #[error("Attestation type '{0}' does not support 'dcap_image_hashes'")]
-    DcapImageHashesUnsupportedAttestationType(String),
-}
-
 /// An accepted measurement value given in the measurements file
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeasurementRecord {
@@ -415,96 +376,12 @@ impl MeasurementPolicy {
                         }
                         true
                     }
-                    ExpectedMeasurements::Image(image_hashes) => {
-                        let Some(platform_metadata) = &platform_metadata else {
-                            return false;
-                        };
-                        let firmware = match platform_metadata.attestation_type {
-                            ImageAttestationType::GcpTdx => {
-                                let Some(mrtd) =
-                                    dcap_measurements.get(&DcapMeasurementRegister::MRTD)
-                                else {
-                                    warn!(
-                                        "Could not match image hash measurement due to missing MRTD"
-                                    );
-                                    return false;
-                                };
-
-                                let result = if let Some(cache) = known_gcp_firmware {
-                                    cache.get_or_fetch(*mrtd)
-                                } else {
-                                    fetch_firmware(*mrtd)
-                                };
-                                match result {
-                                    Ok(firmware) => Some(firmware),
-                                    Err(err) => {
-                                        warn!(
-                                            "Could not match image hash measurement - failed to fetch or verify Google firmware: {err:?}"
-                                        );
-                                        return false;
-                                    }
-                                }
-                            }
-                            // These may be supported in the future but currently regarded as too
-                            // experimental to work with 'portable' measurement policies
-                            ImageAttestationType::SelfHostedTdx => {
-                                warn!("Attempting to match portable measurement policy with bare metal TDX - not yet supported");
-                                return false;
-                            },
-                            ImageAttestationType::AzureTdx => {
-                                warn!("Attempting to match portable measurement policy with Azure TDX - not yet supported");
-                                return false;
-                            },
-                        };
-
-                        let expected_measurements = match expected_dcap_registers(
-                            image_hashes,
-                            platform_metadata,
-                            firmware.as_ref(),
-                        )  {
-                            Ok(expected) => expected,
-                            Err(err) => {
-                                warn!("Failed to compute expected DCAP registers: {err:?}");
-                                return false;
-                            }
-                        };
-
-                        if let Some(expected_mrtd) = expected_measurements.mrtd {
-                            match dcap_measurements.get(&DcapMeasurementRegister::MRTD) {
-                                Some(mrtd) if mrtd == &expected_mrtd => {}
-                                _ => return false,
-                            }
-                        } else {
-                            // This will only be the case with SelfHostedTdx which currently would
-                            // already bail with the check above
-                            return false;
-                        }
-
-                        if let Some(expected_rtmr0) = expected_measurements.rtmr0 {
-                            match dcap_measurements.get(&DcapMeasurementRegister::RTMR0) {
-                                Some(rtmr0) if rtmr0 == &expected_rtmr0 => {}
-                                _ => return false,
-                            }
-                        } else {
-                            // This will only be the case with SelfHostedTdx which currently would
-                            // already bail with the check above
-                            return false;
-                        }
-
-                        if let Some(rtmr1) = dcap_measurements.get(&DcapMeasurementRegister::RTMR1)
-                            && rtmr1 != &expected_measurements.rtmr1
-                        {
-                            return false;
-                        }
-
-                        if let Some(rtmr2) = dcap_measurements.get(&DcapMeasurementRegister::RTMR2)
-                            && rtmr2 != &expected_measurements.rtmr2
-                        {
-                            return false;
-                        }
-
-                        true
-                    }
+                    ExpectedMeasurements::Image(image_hashes) => compare_portable_dcap_measurement(
+                        image_hashes,
+                        dcap_measurements,
+                        platform_metadata,
+                        known_gcp_firmware,
+                    ),
                     ExpectedMeasurements::Azure(_) | ExpectedMeasurements::NoAttestation => false,
                 }
             }
@@ -712,6 +589,144 @@ impl MeasurementPolicy {
         Ok(normalized_host.eq_ignore_ascii_case("localhost") ||
             normalized_host.parse::<IpAddr>().is_ok_and(|address| address.is_loopback()))
     }
+}
+
+/// Checks a set of DCAP measurement values against a set of OS image hashes
+/// and platform metadata.
+///
+/// Returns true if the given measurements match the expected ones,
+/// otherwise logs a warning and returns false.
+pub(crate) fn compare_portable_dcap_measurement(
+    image_hashes: &DcapImageHashes,
+    dcap_measurements: &HashMap<DcapMeasurementRegister, [u8; 48]>,
+    platform_metadata: Option<&PlatformMetadata>,
+    known_gcp_firmware: Option<&GcpFirmwareCache>,
+) -> bool {
+    let Some(platform_metadata) = &platform_metadata else {
+        return false;
+    };
+
+    // On GCP, fetch the firmware associated with the MRTD
+    let firmware = match platform_metadata.attestation_type {
+        ImageAttestationType::GcpTdx => {
+            let Some(mrtd) = dcap_measurements.get(&DcapMeasurementRegister::MRTD) else {
+                warn!("Could not match image hash measurement due to missing MRTD");
+                return false;
+            };
+
+            let result = if let Some(cache) = known_gcp_firmware {
+                cache.get_or_fetch(*mrtd)
+            } else {
+                fetch_firmware(*mrtd)
+            };
+            match result {
+                Ok(firmware) => Some(firmware),
+                Err(err) => {
+                    warn!(
+                        "Could not match image hash measurement - failed to fetch or verify Google firmware: {err:?}"
+                    );
+                    return false;
+                }
+            }
+        }
+        // These may be supported in the future but currently regarded as too
+        // experimental to work with 'portable' measurement policies
+        ImageAttestationType::SelfHostedTdx => {
+            warn!(
+                "Attempting to match portable measurement policy with bare metal TDX - not yet supported"
+            );
+            return false;
+        }
+        ImageAttestationType::AzureTdx => {
+            warn!(
+                "Attempting to match portable measurement policy with Azure TDX - not yet supported"
+            );
+            return false;
+        }
+    };
+
+    // Compute expect measurements
+    let expected_measurements =
+        match expected_dcap_registers(image_hashes, platform_metadata, firmware.as_ref()) {
+            Ok(expected) => expected,
+            Err(err) => {
+                warn!("Failed to compute expected DCAP registers: {err:?}");
+                return false;
+            }
+        };
+
+    if let Some(expected_mrtd) = expected_measurements.mrtd {
+        match dcap_measurements.get(&DcapMeasurementRegister::MRTD) {
+            Some(mrtd) if mrtd == &expected_mrtd => {}
+            _ => return false,
+        }
+    } else {
+        // This will only be the case with SelfHostedTdx which currently would
+        // already bail with the check above
+        return false;
+    }
+
+    if let Some(expected_rtmr0) = expected_measurements.rtmr0 {
+        match dcap_measurements.get(&DcapMeasurementRegister::RTMR0) {
+            Some(rtmr0) if rtmr0 == &expected_rtmr0 => {}
+            _ => return false,
+        }
+    } else {
+        // This will only be the case with SelfHostedTdx which currently would
+        // already bail with the check above
+        return false;
+    }
+
+    if dcap_measurements.get(&DcapMeasurementRegister::RTMR1) != Some(&expected_measurements.rtmr1)
+    {
+        return false;
+    }
+
+    if dcap_measurements.get(&DcapMeasurementRegister::RTMR2) != Some(&expected_measurements.rtmr2)
+    {
+        return false;
+    }
+
+    true
+}
+
+/// An error when converting measurements / to or from HTTP header format
+#[derive(Error, Debug)]
+pub enum MeasurementFormatError {
+    #[error("JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Missing value: {0}")]
+    MissingValue(String),
+    #[error("Invalid header value: {0}")]
+    BadHeaderValue(#[from] InvalidHeaderValue),
+    #[error("IO: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Attestation type not valid")]
+    AttestationTypeNotValid,
+    #[error("Hex: {0}")]
+    Hex(#[from] hex::FromHexError),
+    #[error("Expected 48 byte value")]
+    BadLength,
+    #[error("TDX quote register index must be in the ranger 0-3")]
+    BadRegisterIndex,
+    #[error("ParseInt: {0}")]
+    ParseInt(#[from] std::num::ParseIntError),
+    #[error("Failed to read measurements from URL: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    #[error("Invalid URL: {0}")]
+    InvalidUri(#[from] InvalidUri),
+    #[error("Refusing to load measurement policy over plain HTTP from non-loopback host: {0}")]
+    InsecureHttpNotLoopback(String),
+    #[error("Measurement entry for register '{0}' has both 'expected' and 'expected_any'")]
+    BothExpectedAndExpectedAny(String),
+    #[error("Measurement entry for register '{0}' has neither 'expected' nor 'expected_any'")]
+    NoExpectedValue(String),
+    #[error("Measurement entry for register '{0}' has empty 'expected_any' list")]
+    EmptyExpectedAny(String),
+    #[error("Measurement record has both 'measurements' and 'dcap_image_hashes' — set only one")]
+    BothMeasurementsAndDcapImageHashes,
+    #[error("Attestation type '{0}' does not support 'dcap_image_hashes'")]
+    DcapImageHashesUnsupportedAttestationType(String),
 }
 
 #[cfg(test)]
