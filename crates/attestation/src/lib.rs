@@ -492,7 +492,7 @@ impl AttestationVerifier {
             .map(|evidence| evidence.platform.clone());
         self.measurement_policy.check_measurement_with_gcp_cache(
             &measurements,
-            platform_metadata,
+            platform_metadata.as_ref(),
             Some(&self.known_gcp_firmware),
         )?;
 
@@ -569,7 +569,7 @@ impl AttestationVerifier {
             .map(|evidence| evidence.platform.clone());
         self.measurement_policy.check_measurement_with_gcp_cache(
             &measurements,
-            platform_metadata,
+            platform_metadata.as_ref(),
             Some(&self.known_gcp_firmware),
         )?;
 

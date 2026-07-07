@@ -10,7 +10,7 @@ use thiserror::Error;
 /// verification
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GcpFirmwareCache {
-    cache: Arc<RwLock<HashMap<[u8; 48], attest_measure::dcap::DcapFirmware>>>,
+    cache: Arc<RwLock<HashMap<[u8; 48], DcapFirmware>>>,
 }
 
 impl GcpFirmwareCache {
@@ -123,21 +123,15 @@ mod tests {
             ram_bytes: 17_179_869_184,
             num_disks: 1,
             acpi: Some(AcpiHashes {
-                loader: [
-                    246, 12, 53, 229, 59, 178, 27, 70, 117, 207, 168, 219, 49, 14, 200, 142, 56,
-                    205, 54, 157, 141, 70, 58, 205, 222, 129, 81, 34, 250, 139, 137, 59, 136, 150,
-                    165, 120, 59, 83, 136, 86, 105, 62, 215, 100, 93, 219, 137, 126,
-                ],
-                rsdp: [
-                    80, 157, 207, 225, 11, 235, 93, 71, 12, 64, 242, 94, 48, 137, 83, 112, 148,
-                    136, 49, 185, 207, 121, 219, 21, 217, 119, 231, 187, 168, 235, 66, 247, 32, 2,
-                    18, 7, 26, 216, 177, 157, 96, 17, 117, 151, 121, 236, 237, 90,
-                ],
-                tables: [
-                    11, 176, 175, 160, 8, 135, 59, 220, 32, 222, 224, 247, 65, 218, 120, 150, 194,
-                    191, 238, 233, 74, 229, 46, 155, 219, 249, 75, 200, 124, 50, 208, 74, 75, 31,
-                    29, 130, 68, 144, 241, 218, 229, 116, 255, 109, 78, 75, 176, 179,
-                ],
+                loader: decode_dcap_hash(
+                    "f60c35e53bb21b4675cfa8db310ec88e38cd369d8d463acdde815122fa8b893b8896a5783b538856693ed7645ddb897e",
+                ),
+                rsdp: decode_dcap_hash(
+                    "509dcfe10beb5d470c40f25e30895370948831b9cf79db15d977e7bba8eb42f7200212071ad8b19d6011759779eced5a",
+                ),
+                tables: decode_dcap_hash(
+                    "0bb0afa008873bdc20dee0f741da7896c2bfeee94ae52e9bdbf94bc87c32d04a4b1f1d824490f1dae574ff6d4e4bb0b3",
+                ),
             }),
         }
     }
@@ -180,7 +174,7 @@ mod tests {
         measurement_policy
             .check_measurement_with_gcp_cache(
                 &measurements,
-                Some(gcp_portable_platform_metadata()),
+                Some(&gcp_portable_platform_metadata()),
                 Some(&gcp_firmware_cache),
             )
             .unwrap();

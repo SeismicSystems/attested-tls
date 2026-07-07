@@ -388,7 +388,7 @@ impl MeasurementPolicy {
     pub fn check_measurement(
         &self,
         measurements: &MultiMeasurements,
-        platform_metadata: Option<PlatformMetadata>,
+        platform_metadata: Option<&PlatformMetadata>,
     ) -> Result<(), AttestationError> {
         self.check_measurement_with_gcp_cache(measurements, platform_metadata, None)
     }
@@ -399,7 +399,7 @@ impl MeasurementPolicy {
     pub(crate) fn check_measurement_with_gcp_cache(
         &self,
         measurements: &MultiMeasurements,
-        platform_metadata: Option<PlatformMetadata>,
+        platform_metadata: Option<&PlatformMetadata>,
         known_gcp_firmware: Option<&GcpFirmwareCache>,
     ) -> Result<(), AttestationError> {
         if self.accepted_measurements.iter().any(|measurement_record| match measurements {
@@ -870,7 +870,7 @@ mod tests {
             (DcapMeasurementRegister::RTMR3, mock_tdx::MOCK_RTMR3),
         ]));
 
-        policy.check_measurement(&measurements, Some(platform_metadata)).unwrap();
+        policy.check_measurement(&measurements, Some(&platform_metadata)).unwrap();
     }
 
     #[tokio::test]
