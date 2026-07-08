@@ -353,6 +353,7 @@ dependencies = [
  "pem-rfc7468",
  "rand_core 0.6.4",
  "reqwest 0.13.4",
+ "rustls",
  "rustls-webpki",
  "serde",
  "serde-saphyr",
@@ -380,6 +381,7 @@ dependencies = [
  "hex",
  "parity-scale-codec",
  "reqwest 0.13.4",
+ "rustls",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3010,6 +3012,7 @@ dependencies = [
  "mock-tdx",
  "rcgen 0.14.7",
  "reqwest 0.13.4",
+ "rustls",
  "serde",
  "serde-saphyr",
  "serde_json",
@@ -3254,7 +3257,6 @@ version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
- "aws-lc-rs",
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
@@ -3575,7 +3577,6 @@ dependencies = [
  "log",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",

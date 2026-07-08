@@ -177,6 +177,9 @@ fn ca_issuers_urls(cert: &X509Certificate<'_>) -> Vec<String> {
 }
 
 fn fetch_certificate_der(url: &str) -> Result<Vec<u8>, MaaError> {
+    #[cfg(test)]
+    crate::install_test_crypto_provider();
+
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(MaaError::UnsupportedAiaUrl { url: url.to_string() });
     }
