@@ -189,7 +189,7 @@ impl MultiMeasurements {
                     })
                     .collect::<Result<_, MeasurementFormatError>>()?,
             ),
-            AttestationType::DcapTdx | AttestationType::GcpTdx | AttestationType::QemuTdx => {
+            AttestationType::DcapTdx | AttestationType::GcpTdx => {
                 let measurements_map = measurements_map
                     .into_iter()
                     .map(|(k, v)| {
@@ -267,7 +267,7 @@ impl MeasurementRecord {
             measurements: match attestation_type {
                 AttestationType::None => ExpectedMeasurements::NoAttestation,
                 AttestationType::AzureTdx => ExpectedMeasurements::Azure(HashMap::new()),
-                AttestationType::DcapTdx | AttestationType::GcpTdx | AttestationType::QemuTdx => {
+                AttestationType::DcapTdx | AttestationType::GcpTdx => {
                     ExpectedMeasurements::Dcap(HashMap::new())
                 }
             },
@@ -308,7 +308,6 @@ impl MeasurementPolicy {
             accepted_measurements: vec![
                 MeasurementRecord::allow_no_attestation(),
                 MeasurementRecord::allow_any_measurement(AttestationType::DcapTdx),
-                MeasurementRecord::allow_any_measurement(AttestationType::QemuTdx),
                 MeasurementRecord::allow_any_measurement(AttestationType::GcpTdx),
                 MeasurementRecord::allow_any_measurement(AttestationType::AzureTdx),
             ],
@@ -320,7 +319,6 @@ impl MeasurementPolicy {
         Self {
             accepted_measurements: vec![
                 MeasurementRecord::allow_any_measurement(AttestationType::DcapTdx),
-                MeasurementRecord::allow_any_measurement(AttestationType::QemuTdx),
                 MeasurementRecord::allow_any_measurement(AttestationType::GcpTdx),
                 MeasurementRecord::allow_any_measurement(AttestationType::AzureTdx),
             ],
@@ -531,29 +529,28 @@ impl MeasurementPolicy {
                             )?;
                         ExpectedMeasurements::Azure(azure_measurements)
                     }
-                    AttestationType::DcapTdx |
-                    AttestationType::GcpTdx |
-                    AttestationType::QemuTdx => ExpectedMeasurements::Dcap(
-                        measurements
-                            .iter()
-                            .map(|(index_str, entry)| {
-                                Ok((
-                                    DcapMeasurementRegister::from_policy_key(index_str)?,
-                                    parse_measurement_entry::<48>(entry, index_str)?,
-                                ))
-                            })
-                            .collect::<Result<
-                                HashMap<DcapMeasurementRegister, Vec<[u8; 48]>>,
-                                MeasurementFormatError,
-                            >>()?,
-                    ),
+                    AttestationType::DcapTdx | AttestationType::GcpTdx => {
+                        ExpectedMeasurements::Dcap(
+                            measurements
+                                .iter()
+                                .map(|(index_str, entry)| {
+                                    Ok((
+                                        DcapMeasurementRegister::from_policy_key(index_str)?,
+                                        parse_measurement_entry::<48>(entry, index_str)?,
+                                    ))
+                                })
+                                .collect::<Result<
+                                    HashMap<DcapMeasurementRegister, Vec<[u8; 48]>>,
+                                    MeasurementFormatError,
+                                >>()?,
+                        )
+                    }
                 },
                 (None, Some(image_hashes)) => match attestation_type {
                     // Currently only GCP is supported for portable measurement policy - but support
                     // for other types is planned
                     AttestationType::GcpTdx => ExpectedMeasurements::Image(image_hashes),
                     AttestationType::DcapTdx |
-                    AttestationType::QemuTdx |
                     AttestationType::None |
                     AttestationType::AzureTdx => {
                         return Err(
@@ -942,6 +939,30 @@ mod tests {
         } else {
             panic!("Expected ExpectedMeasurements::Dcap");
         }
+    }
+
+    #[tokio::test]
+    async fn test_parse_legacy_qemu_attestation_type_as_dcap() {
+        let json = r#"[
+            {
+                "measurement_id": "legacy-qemu",
+                "attestation_type": "qemu-tdx",
+                "measurements": {
+                    "mrtd": {
+                        "expected_any": [
+                            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                        ]
+                    }
+                }
+            }
+        ]"#;
+
+        let policy = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 1);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Dcap(_)
+        ));
     }
 
     /// A JSON policy that pins image-component hashes rather than raw

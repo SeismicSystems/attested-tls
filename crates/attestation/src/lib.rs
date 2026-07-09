@@ -71,7 +71,7 @@ impl AttestationExchangeMessage {
                     Err(AttestationError::AttestationTypeNotSupported)
                 }
             }
-            AttestationType::DcapTdx | AttestationType::GcpTdx | AttestationType::QemuTdx => {
+            AttestationType::DcapTdx | AttestationType::GcpTdx => {
                 let quote = dcap_qvl::verify::Quote::parse(&attestation_evidence.quote)
                     .map_err(DcapVerificationError::from)?;
                 Ok(Some(MultiMeasurements::from_dcap_qvl_quote(&quote)?))
@@ -98,7 +98,7 @@ impl From<attest_types::AttestationType> for AttestationType {
         match attestation_type {
             attest_types::AttestationType::GcpTdx => AttestationType::GcpTdx,
             attest_types::AttestationType::AzureTdx => AttestationType::AzureTdx,
-            attest_types::AttestationType::SelfHostedTdx => AttestationType::QemuTdx,
+            attest_types::AttestationType::SelfHostedTdx => AttestationType::DcapTdx,
         }
     }
 }
@@ -111,9 +111,7 @@ impl TryFrom<AttestationType> for attest_types::AttestationType {
             AttestationType::None => Err(AttestationError::AttestationTypeNotAccepted),
             AttestationType::AzureTdx => Ok(attest_types::AttestationType::AzureTdx),
             AttestationType::GcpTdx => Ok(attest_types::AttestationType::GcpTdx),
-            AttestationType::DcapTdx | AttestationType::QemuTdx => {
-                Ok(attest_types::AttestationType::SelfHostedTdx)
-            }
+            AttestationType::DcapTdx => Ok(attest_types::AttestationType::SelfHostedTdx),
         }
     }
 }
@@ -129,9 +127,8 @@ pub enum AttestationType {
     GcpTdx,
     /// TDX on Azure, with MAA
     AzureTdx,
-    /// TDX on Qemu (no cloud platform)
-    QemuTdx,
-    /// DCAP TDX
+    /// DCAP TDX (no cloud platform specified)
+    #[serde(alias = "qemu-tdx")] // To support legacy measurements file format
     DcapTdx,
 }
 
@@ -141,7 +138,6 @@ impl AttestationType {
         match self {
             AttestationType::None => "none",
             AttestationType::AzureTdx => "azure-tdx",
-            AttestationType::QemuTdx => "qemu-tdx",
             AttestationType::GcpTdx => "gcp-tdx",
             AttestationType::DcapTdx => "dcap-tdx",
         }
@@ -281,7 +277,7 @@ impl AttestationGenerator {
                         Err(AttestationError::AttestationTypeNotSupported)
                     }
                 }
-                AttestationType::DcapTdx | AttestationType::GcpTdx | AttestationType::QemuTdx => {
+                AttestationType::DcapTdx | AttestationType::GcpTdx => {
                     #[cfg(any(test, feature = "mock"))]
                     let platform = mock_platform_metadata(self.attestation_type)?;
                     #[cfg(not(any(test, feature = "mock")))]
@@ -483,7 +479,7 @@ impl AttestationVerifier {
                     return Err(AttestationError::AttestationTypeNotSupported);
                 }
             }
-            AttestationType::DcapTdx | AttestationType::GcpTdx | AttestationType::QemuTdx => {
+            AttestationType::DcapTdx | AttestationType::GcpTdx => {
                 let attestation_evidence = attestation_exchange_message
                     .attestation_evidence
                     .as_ref()
@@ -555,7 +551,7 @@ impl AttestationVerifier {
                     return Err(AttestationError::AttestationTypeNotSupported);
                 }
             }
-            AttestationType::DcapTdx | AttestationType::QemuTdx | AttestationType::GcpTdx => {
+            AttestationType::DcapTdx | AttestationType::GcpTdx => {
                 let attestation_evidence = attestation_exchange_message
                     .attestation_evidence
                     .as_ref()

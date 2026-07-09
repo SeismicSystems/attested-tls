@@ -65,7 +65,6 @@ These are the attestation type names used in the measurements file.
 - `none` - No attestation provided
 - `gcp-tdx` - DCAP TDX on Google Cloud Platform
 - `azure-tdx` - TDX on Azure, with vTPM attestation
-- `qemu-tdx` - TDX on Qemu (no cloud platform)
 - `dcap-tdx` - DCAP TDX (platform not specified)
 
 Local attestation types can be automatically detected. This works by initially
@@ -73,7 +72,7 @@ attempting an Azure attestation, and if it fails attempting a DCAP attestation,
 and if that fails assume no CVM attestation.  On detecting DCAP, a call to the
 Google Cloud metadata API is used to detect whether we are on Google Cloud.
 
-In the case of attestation types `dcap-tdx`, `gcp-tdx`, and `qemu-tdx`, a
+In the case of attestation types `dcap-tdx` and `gcp-tdx`, a
 standard DCAP attestation is generated using the `configfs-tsm` linux filesystem
 interface. This means that the binary must be run with access to
 `/sys/kernel/config/tsm/report` which on many systems requires sudo.  If
@@ -294,6 +293,5 @@ Example:
 Portable policies currently only work with the `"gcp-tdx"` attestation type.
 For GCP, the verifier fetches the platform firmware blob from Google's metadata
 service (keyed by MRTD) and combines it with the image hashes to reconstruct
-the expected registers. Support for other attestation types is planned; but
 `dcap_image_hashes` record with any other attestation type is rejected when
 parsing from JSON.
