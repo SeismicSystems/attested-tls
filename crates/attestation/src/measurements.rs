@@ -3,7 +3,12 @@
 use std::{collections::HashMap, fmt, fmt::Formatter, net::IpAddr, path::PathBuf};
 
 use attest_measure::dcap::expected_dcap_registers;
-use attest_types::{AttestationType as ImageAttestationType, DcapImageHashes, PlatformMetadata};
+use attest_types::{
+    AttestationType as ImageAttestationType,
+    DcapImageHashes,
+    MeasurementOutput,
+    PlatformMetadata,
+};
 use dcap_qvl::quote::Report;
 use http::{HeaderValue, header::InvalidHeaderValue, uri::InvalidUri};
 use serde::Deserialize;
@@ -501,11 +506,58 @@ impl MeasurementPolicy {
             }
         }
 
-        let records_simple: Vec<MeasurementRecordSimple> = serde_json::from_slice(&json_bytes)?;
+        let json: serde_json::Value = serde_json::from_slice(&json_bytes)?;
+
+        // If a single object is given, we treat it as an array with a single
+        // element
+        let records = match json {
+            serde_json::Value::Array(records) => records,
+            record => vec![record],
+        };
 
         let mut measurement_policy = Vec::new();
 
-        for record in records_simple {
+        for record_json in records {
+            // Legacy policy records may contain arbitrary extra fields, so
+            // prefer that format whenever its required discriminator exists.
+            // Otherwise, allow the format emitted by the attest-measure crate.
+            if record_json.get("attestation_type").is_none() && record_json.get("kind").is_some() {
+                match serde_json::from_value(record_json)? {
+                    MeasurementOutput::Portable(portable) => {
+                        if let Some(azure) = portable.azure {
+                            measurement_policy.push(MeasurementRecord {
+                                measurement_id: String::new(),
+                                measurements: ExpectedMeasurements::Azure(HashMap::from([
+                                    (4, vec![azure.pcr4]),
+                                    (9, vec![azure.pcr9]),
+                                    (11, vec![azure.pcr11]),
+                                ])),
+                            });
+                        }
+
+                        measurement_policy.push(MeasurementRecord {
+                            measurement_id: String::new(),
+                            measurements: ExpectedMeasurements::Image(portable.dcap),
+                        });
+                    }
+                    MeasurementOutput::Azure(azure) => {
+                        measurement_policy.push(MeasurementRecord {
+                            measurement_id: String::new(),
+                            measurements: ExpectedMeasurements::Azure(HashMap::from([
+                                (4, vec![azure.pcr4]),
+                                (9, vec![azure.pcr9]),
+                                (11, vec![azure.pcr11]),
+                            ])),
+                        });
+                    }
+                    MeasurementOutput::Dcap(_) => {
+                        return Err(MeasurementFormatError::UnsafeAttestMeasureDcapOutput);
+                    }
+                }
+                continue;
+            }
+
+            let record: MeasurementRecordSimple = serde_json::from_value(record_json)?;
             let attestation_type: AttestationType =
                 serde_json::from_value(serde_json::Value::String(record.attestation_type.clone()))?;
 
@@ -724,6 +776,10 @@ pub enum MeasurementFormatError {
     BothMeasurementsAndDcapImageHashes,
     #[error("Attestation type '{0}' does not support 'dcap_image_hashes'")]
     DcapImageHashesUnsupportedAttestationType(String),
+    #[error(
+        "DCAP attest-measure output only pins RTMR1 and RTMR2; use a portable output or an explicit measurement policy"
+    )]
+    UnsafeAttestMeasureDcapOutput,
 }
 
 #[cfg(test)]
@@ -738,6 +794,28 @@ mod tests {
 
     /// MRTD from the pinned GCP firmware snapshot test asset
     const GCP_FIRMWARE_MRTD: &str = "feb7486608382c1ff0e15b4648ddc0acea6ca974eb53e3529f4c4bd5ffbaa20bf335cb75965cea65fe473aed9647c162";
+
+    fn attest_measure_portable_json(include_azure: bool) -> serde_json::Value {
+        let hash32 = "00".repeat(32);
+        let hash48 = "00".repeat(48);
+
+        serde_json::json!({
+            "kind": "portable",
+            "azure": include_azure.then(|| serde_json::json!({
+                "pcr4": hash32,
+                "pcr9": hash32,
+                "pcr11": hash32,
+            })),
+            "dcap": {
+                "uki_authenticode": hash48,
+                "kernel_authenticode": hash48,
+                "cmdline_hash": hash48,
+                "initrd_hash": hash48,
+                "gpt_disk_guid_hash": hash48,
+            },
+        })
+    }
+
     /// CFV from the same pinned GCP firmware snapshot test asset
     const GCP_FIRMWARE_CFV: &str = "9cb6bf09aea7b4acb8549e328d0edd6f15defc0b00d744bb9fb5bab0962bc5c70f69d233e96dbc7c1105ba085781dc88";
     /// Base64-encoded HOB template from the historical GCP firmware asset
@@ -987,6 +1065,187 @@ mod tests {
         assert!(matches!(
             policy.accepted_measurements[0].measurements,
             ExpectedMeasurements::Image(_)
+        ));
+    }
+
+    /// The object emitted by `attest measure portable` is accepted directly
+    /// and converted into Azure and GCP-compatible policy records.
+    #[test]
+    fn test_parse_attest_measure_portable_output() {
+        let json = r#"{
+            "kind": "portable",
+            "azure": {
+                "pcr4": "2bc9d1d583b628bdadfc5dcc918276fd2cfc953103540f7a80e463df97a3abc0",
+                "pcr9": "7dc3b202c2dc30993354744188b3d8fda892360270548f43ce73dce507a060de",
+                "pcr11": "7b609d7233463bbb35ac89f5faabc24769ccc185ecd5f6adb2cf5c4944dd59a7"
+            },
+            "dcap": {
+                "uki_authenticode": "7336449f945aea776f2e5ed2e2552f88e1eed8467b1736523a436971cb83496277bb484a7cf6e986f5127d19e8ee187b",
+                "kernel_authenticode": "b6c5133268aa8b440509f3d53ee855a5cd3aeb6441eb109a9f27f14c43bce3e2383856df4af876501ceeb4c9a3b15f0c",
+                "cmdline_hash": "e03b89abf354a38976537b7a9138fd312e4cbf73b61eebc44086491701b1d167b9f6cb97a922325866c93e0834723d87",
+                "initrd_hash": "5f2f98964c8ff86f79a17d53afc26f1cf8d03964f0309b474ec9bb1b99c5a180fbe54a636631ab2fab29d8d5b1be0bae",
+                "gpt_disk_guid_hash": "488fa3f08aae01c1a46b497319e8a7d3b7335c9ff4f4d7fe6a3dd62c844b03de22157c0303be58f10e3152687778e68d"
+            }
+        }"#;
+
+        let policy = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 2);
+
+        let azure = &policy.accepted_measurements[0];
+        assert!(azure.measurement_id.is_empty());
+        let ExpectedMeasurements::Azure(registers) = &azure.measurements else {
+            panic!("expected Azure measurements");
+        };
+        let expected_pcr4: [u8; 32] =
+            hex::decode("2bc9d1d583b628bdadfc5dcc918276fd2cfc953103540f7a80e463df97a3abc0")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(registers[&4], vec![expected_pcr4]);
+
+        let dcap = &policy.accepted_measurements[1];
+        assert!(dcap.measurement_id.is_empty());
+        let ExpectedMeasurements::Image(image_hashes) = &dcap.measurements else {
+            panic!("expected portable DCAP image hashes");
+        };
+        assert_eq!(
+            image_hashes.uki_authenticode,
+            hex::decode(
+                "7336449f945aea776f2e5ed2e2552f88e1eed8467b1736523a436971cb83496277bb484a7cf6e986f5127d19e8ee187b"
+            )
+            .unwrap()
+            .as_slice()
+        );
+    }
+
+    #[test]
+    fn test_parse_attest_measure_portable_output_without_azure() {
+        let json = r#"{
+            "kind": "portable",
+            "azure": null,
+            "dcap": {
+                "uki_authenticode": "7336449f945aea776f2e5ed2e2552f88e1eed8467b1736523a436971cb83496277bb484a7cf6e986f5127d19e8ee187b",
+                "kernel_authenticode": "b6c5133268aa8b440509f3d53ee855a5cd3aeb6441eb109a9f27f14c43bce3e2383856df4af876501ceeb4c9a3b15f0c",
+                "cmdline_hash": "e03b89abf354a38976537b7a9138fd312e4cbf73b61eebc44086491701b1d167b9f6cb97a922325866c93e0834723d87",
+                "initrd_hash": "5f2f98964c8ff86f79a17d53afc26f1cf8d03964f0309b474ec9bb1b99c5a180fbe54a636631ab2fab29d8d5b1be0bae",
+                "gpt_disk_guid_hash": "488fa3f08aae01c1a46b497319e8a7d3b7335c9ff4f4d7fe6a3dd62c844b03de22157c0303be58f10e3152687778e68d"
+            }
+        }"#;
+
+        let policy = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 1);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Image(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_single_legacy_record_object() {
+        let json = r#"{
+            "attestation_type": "dcap-tdx"
+        }"#;
+
+        let policy = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 1);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Dcap(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_legacy_record_with_kind_metadata() {
+        let json = r#"{
+            "kind": "application-policy",
+            "attestation_type": "dcap-tdx"
+        }"#;
+
+        let policy = MeasurementPolicy::from_json_bytes(json.as_bytes().to_vec()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 1);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Dcap(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_attest_measure_azure_output() {
+        let json = serde_json::json!({
+            "kind": "azure",
+            "pcr4": "11".repeat(32),
+            "pcr9": "22".repeat(32),
+            "pcr11": "33".repeat(32),
+        });
+
+        let policy =
+            MeasurementPolicy::from_json_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 1);
+
+        let ExpectedMeasurements::Azure(registers) = &policy.accepted_measurements[0].measurements
+        else {
+            panic!("expected Azure measurements");
+        };
+        assert_eq!(registers.len(), 3);
+        assert_eq!(registers[&4], vec![[0x11; 32]]);
+        assert_eq!(registers[&9], vec![[0x22; 32]]);
+        assert_eq!(registers[&11], vec![[0x33; 32]]);
+    }
+
+    #[test]
+    fn test_reject_attest_measure_dcap_output() {
+        let json = serde_json::json!({
+            "kind": "dcap",
+            "rtmr1": "44".repeat(48),
+            "rtmr2": "55".repeat(48),
+        });
+
+        let result = MeasurementPolicy::from_json_bytes(serde_json::to_vec(&json).unwrap());
+        assert!(matches!(result, Err(MeasurementFormatError::UnsafeAttestMeasureDcapOutput)));
+    }
+
+    #[test]
+    fn test_parse_array_of_attest_measure_portable_outputs() {
+        let portable = attest_measure_portable_json(true);
+        let json = serde_json::to_vec(&[portable.clone(), portable]).unwrap();
+
+        let policy = MeasurementPolicy::from_json_bytes(json).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 4);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Azure(_)
+        ));
+        assert!(matches!(
+            policy.accepted_measurements[1].measurements,
+            ExpectedMeasurements::Image(_)
+        ));
+        assert!(matches!(
+            policy.accepted_measurements[2].measurements,
+            ExpectedMeasurements::Azure(_)
+        ));
+        assert!(matches!(
+            policy.accepted_measurements[3].measurements,
+            ExpectedMeasurements::Image(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_mixed_legacy_and_attest_measure_array() {
+        let json = serde_json::to_vec(&[
+            attest_measure_portable_json(false),
+            serde_json::json!({ "attestation_type": "azure-tdx" }),
+        ])
+        .unwrap();
+
+        let policy = MeasurementPolicy::from_json_bytes(json).unwrap();
+        assert_eq!(policy.accepted_measurements.len(), 2);
+        assert!(matches!(
+            policy.accepted_measurements[0].measurements,
+            ExpectedMeasurements::Image(_)
+        ));
+        assert!(matches!(
+            policy.accepted_measurements[1].measurements,
+            ExpectedMeasurements::Azure(_)
         ));
     }
 
