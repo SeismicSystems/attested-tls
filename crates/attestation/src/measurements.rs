@@ -518,9 +518,7 @@ impl MeasurementPolicy {
         let mut measurement_policy = Vec::new();
 
         for record_json in records {
-            // Legacy policy records may contain arbitrary extra fields, so
-            // prefer that format whenever its required discriminator exists.
-            // Otherwise, allow the format emitted by the attest-measure crate.
+            // Support the format output by the attest-measure crate
             if record_json.get("attestation_type").is_none() && record_json.get("kind").is_some() {
                 match serde_json::from_value(record_json)? {
                     MeasurementOutput::Portable(portable) => {
@@ -551,6 +549,7 @@ impl MeasurementPolicy {
                         });
                     }
                     MeasurementOutput::Dcap(_) => {
+                        // Not supported because only RTMR 1 and 2 are specified
                         return Err(MeasurementFormatError::UnsafeAttestMeasureDcapOutput);
                     }
                 }
