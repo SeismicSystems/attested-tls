@@ -292,6 +292,36 @@ Example:
 
 Portable policies currently only work with the `"gcp-tdx"` attestation type.
 For GCP, the verifier fetches the platform firmware blob from Google's metadata
-service (keyed by MRTD) and combines it with the image hashes to reconstruct
-`dcap_image_hashes` record with any other attestation type is rejected when
-parsing from JSON.
+service (keyed by MRTD) and combines it with the image hashes to reconstruct the
+expected registers. A `dcap_image_hashes` record with any other attestation type
+is rejected when parsing from JSON.
+
+The JSON object emitted directly by `attest measure portable` is also accepted
+as a measurement policy. Its optional `azure` PCR values and its `dcap` image
+hashes are converted into Azure TDX and GCP TDX policy records respectively.
+It can be supplied on its own or as an element of a policy array, including an
+array mixed with records in the policy format described above:
+
+```JSON
+{
+  "kind": "portable",
+  "azure": {
+    "pcr4": "<64 hex characters>",
+    "pcr9": "<64 hex characters>",
+    "pcr11": "<64 hex characters>"
+  },
+  "dcap": {
+    "uki_authenticode": "<96 hex characters>",
+    "kernel_authenticode": "<96 hex characters>",
+    "cmdline_hash": "<96 hex characters>",
+    "initrd_hash": "<96 hex characters>",
+    "gpt_disk_guid_hash": "<96 hex characters>"
+  }
+}
+```
+
+The non-portable `"kind": "azure"` output from `attest measure` is accepted in
+the same places and pins PCRs 4, 9, and 11. The `"kind": "dcap"` output is
+rejected because it only pins RTMR1 and RTMR2, leaving the other DCAP registers
+unconstrained. Use the portable output or an explicit measurement policy
+instead.
