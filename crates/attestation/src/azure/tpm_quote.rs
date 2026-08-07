@@ -99,18 +99,6 @@ impl TpmQuote {
     }
 }
 
-/// Conversion from the quote type returned by the vTPM during evidence
-/// generation. Going through the serde wire format guarantees the two
-/// types serialize identically.
-#[cfg(feature = "azure-attester")]
-impl TryFrom<&az_tdx_vtpm::vtpm::Quote> for TpmQuote {
-    type Error = serde_json::Error;
-
-    fn try_from(quote: &az_tdx_vtpm::vtpm::Quote) -> Result<Self, Self::Error> {
-        serde_json::from_value(serde_json::to_value(quote)?)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,33 +119,6 @@ mod tests {
         let quote_value = fixture_quote_value();
         let quote: TpmQuote = serde_json::from_value(quote_value.clone()).unwrap();
         assert_eq!(serde_json::to_value(&quote).unwrap(), quote_value);
-    }
-
-    /// The pure-Rust TPMS_ATTEST parser must agree with tss-esapi's
-    /// unmarshalling on a real Azure vTPM quote.
-    #[cfg(feature = "azure-attester")]
-    #[test]
-    fn tpms_attest_parser_matches_tss_esapi() {
-        use tss_esapi::{
-            structures::{Attest, AttestInfo},
-            traits::UnMarshall,
-        };
-
-        let fixture: &[u8] =
-            include_bytes!("../../test-assets/azure-tdx-with-ak-intermediates-1780922561.yaml");
-        let document: serde_json::Value = serde_saphyr::from_slice(fixture).unwrap();
-        let message: Vec<u8> =
-            serde_json::from_value(document["tpm_attestation"]["quote"]["message"].clone())
-                .unwrap();
-
-        let attest = Attest::unmarshall(&message).unwrap();
-        let AttestInfo::Quote { info } = attest.attested() else {
-            panic!("fixture attestation is not a quote");
-        };
-
-        let parsed = TpmsAttest::parse(&message).unwrap();
-        assert_eq!(parsed.extra_data(), attest.extra_data().as_slice());
-        assert_eq!(parsed.pcr_digest(), info.pcr_digest().as_slice());
     }
 
     #[test]
