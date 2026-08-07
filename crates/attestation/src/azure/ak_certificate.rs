@@ -1,15 +1,21 @@
 //! Generation and verification of AK certificates from the vTPM
-use std::{io::Read, time::Duration};
+#[cfg(feature = "azure-attester")]
+use std::io::Read;
+use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use tokio_rustls::rustls::pki_types::{CertificateDer, TrustAnchor, UnixTime};
 use webpki::EndEntityCert;
+#[cfg(feature = "azure-attester")]
 use x509_parser::{extensions::GeneralName, prelude::*};
 
-use crate::azure::{MAX_EVIDENCE_AK_INTERMEDIATE_CERTIFICATES, MaaError, nv_index};
+use crate::azure::MaaError;
+#[cfg(feature = "azure-attester")]
+use crate::azure::{MAX_EVIDENCE_AK_INTERMEDIATE_CERTIFICATES, nv_index};
 
 /// The NV index where we expect to be able to read the AK certificate from
 /// the vTPM
+#[cfg(feature = "azure-attester")]
 const TPM_AK_CERT_IDX: u32 = 0x1C101D0;
 
 /// id-ad-caIssuers access method OID used in X.509 Authority Information
@@ -17,6 +23,7 @@ const TPM_AK_CERT_IDX: u32 = 0x1C101D0;
 ///
 /// Defined by RFC 5280 as `{ id-ad 2 }`, where `id-ad` is
 /// `1.3.6.1.5.5.7.48`. https://datatracker.ietf.org/doc/html/rfc5280#section-4.2.2.1
+#[cfg(feature = "azure-attester")]
 const AIA_CA_ISSUERS_ACCESS_METHOD_OID: &str = "1.3.6.1.5.5.7.48.2";
 
 // microsoftRSADevicesRoot2021 is the root CA certificate used to sign Azure
@@ -71,6 +78,27 @@ pub(crate) fn verify_ak_cert_with_azure_roots(
     Ok(())
 }
 
+/// Convert a PEM-encoded cert into a TrustAnchor
+fn pem_to_trust_anchor(pem: &str) -> TrustAnchor<'static> {
+    let (_type_label, der_vec) = pem_rfc7468::decode_vec(pem.as_bytes()).unwrap();
+    // Leaking is ok here because plan is to set this up so it is only called
+    // once
+    let leaked: &'static [u8] = Box::leak(der_vec.into_boxed_slice());
+    let cert_der: &'static CertificateDer<'static> =
+        Box::leak(Box::new(CertificateDer::from(leaked)));
+    webpki::anchor_from_trusted_cert(cert_der).expect("Failed to create trust anchor")
+}
+
+/// Allows any EKU - we could change this to only accept
+/// 1.3.6.1.4.1.567.10.3.12 which is the EKU given in the AK certificate
+struct AnyEku;
+
+impl webpki::ExtendedKeyUsageValidator for AnyEku {
+    fn validate(&self, _iter: webpki::KeyPurposeIdIter<'_, '_>) -> Result<(), webpki::Error> {
+        Ok(())
+    }
+}
+
 /// Fetch intermediate certificates from the Authority Information Access
 /// (AIA) CA Issuers URLs in the leaf and each fetched intermediate.
 ///
@@ -82,6 +110,7 @@ pub(crate) fn verify_ak_cert_with_azure_roots(
 ///
 /// The fetched certificates are untrusted evidence. We stop as soon as the
 /// fetched chain verifies against pinned Azure roots.
+#[cfg(feature = "azure-attester")]
 pub(crate) fn fetch_ak_intermediates_from_aia(
     ak_cert_der: &[u8],
     ak_cert: &X509Certificate<'_>,
@@ -112,11 +141,13 @@ pub(crate) fn fetch_ak_intermediates_from_aia(
     Err(MaaError::AkIssuerChainIncomplete)
 }
 
+#[cfg(feature = "azure-attester")]
 struct FetchedIssuer {
     der: Vec<u8>,
     ca_issuers_urls: Vec<String>,
 }
 
+#[cfg(feature = "azure-attester")]
 fn fetch_first_available_issuer(urls: &[String]) -> Result<FetchedIssuer, MaaError> {
     let mut last_error = None;
 
@@ -135,6 +166,7 @@ fn fetch_first_available_issuer(urls: &[String]) -> Result<FetchedIssuer, MaaErr
     Err(last_error.unwrap_or(MaaError::AkIssuerChainIncomplete))
 }
 
+#[cfg(feature = "azure-attester")]
 fn fetch_issuer(url: &str) -> Result<FetchedIssuer, MaaError> {
     tracing::debug!("Fetching Azure vTPM AK issuer certificate from {url}");
     let der = fetch_certificate_der(url)?;
@@ -146,12 +178,14 @@ fn fetch_issuer(url: &str) -> Result<FetchedIssuer, MaaError> {
 }
 
 /// Retrieve an AK certificate from the vTPM
+#[cfg(feature = "azure-attester")]
 pub(crate) fn read_ak_certificate_from_tpm() -> Result<Vec<u8>, tss_esapi::Error> {
     tracing::debug!("Reading AK certificate from vTPM");
     let mut context = nv_index::get_session_context()?;
     nv_index::read_nv_index(&mut context, TPM_AK_CERT_IDX)
 }
 
+#[cfg(feature = "azure-attester")]
 fn ca_issuers_urls(cert: &X509Certificate<'_>) -> Vec<String> {
     cert.extensions()
         .iter()
@@ -176,6 +210,7 @@ fn ca_issuers_urls(cert: &X509Certificate<'_>) -> Vec<String> {
         .collect()
 }
 
+#[cfg(feature = "azure-attester")]
 fn fetch_certificate_der(url: &str) -> Result<Vec<u8>, MaaError> {
     #[cfg(test)]
     crate::install_test_crypto_provider();
@@ -203,33 +238,13 @@ fn fetch_certificate_der(url: &str) -> Result<Vec<u8>, MaaError> {
     }
 }
 
-/// Convert a PEM-encoded cert into a TrustAnchor
-fn pem_to_trust_anchor(pem: &str) -> TrustAnchor<'static> {
-    let (_type_label, der_vec) = pem_rfc7468::decode_vec(pem.as_bytes()).unwrap();
-    // Leaking is ok here because plan is to set this up so it is only called
-    // once
-    let leaked: &'static [u8] = Box::leak(der_vec.into_boxed_slice());
-    let cert_der: &'static CertificateDer<'static> =
-        Box::leak(Box::new(CertificateDer::from(leaked)));
-    webpki::anchor_from_trusted_cert(cert_der).expect("Failed to create trust anchor")
-}
-
-/// Allows any EKU - we could change this to only accept
-/// 1.3.6.1.4.1.567.10.3.12 which is the EKU given in the AK certificate
-struct AnyEku;
-
-impl webpki::ExtendedKeyUsageValidator for AnyEku {
-    fn validate(&self, _iter: webpki::KeyPurposeIdIter<'_, '_>) -> Result<(), webpki::Error> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+    #[cfg(feature = "azure-attester")]
     use std::{
         io::{Read, Write},
         net::TcpListener,
-        sync::OnceLock,
         thread,
         time::Duration,
     };
@@ -260,6 +275,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "azure-attester")]
     #[test]
     fn fetch_first_available_issuer_tries_later_urls_after_failure() {
         let (_type_label, root_der) =
@@ -278,6 +294,7 @@ mod tests {
         assert_eq!(fetched.der, root_der);
     }
 
+    #[cfg(feature = "azure-attester")]
     #[test]
     fn fetch_certificate_der_accepts_explicit_pem() {
         let (_type_label, root_der) =
@@ -293,6 +310,7 @@ mod tests {
         assert_eq!(fetched_der, root_der);
     }
 
+    #[cfg(feature = "azure-attester")]
     fn spawn_test_http_server(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -315,12 +333,14 @@ mod tests {
         format!("http://{address}")
     }
 
+    #[cfg(feature = "azure-attester")]
     fn request_path(request: &str) -> &str {
         // HTTP/1.1 request line format is: `<method> <request-target> <version>`.
         // The local test server only needs the request target, e.g. `/root.pem`.
         request.lines().next().and_then(|line| line.split_ascii_whitespace().nth(1)).unwrap_or("/")
     }
 
+    #[cfg(feature = "azure-attester")]
     fn route_response<'a>(
         routes: &'a [(&'static str, u16, Vec<u8>)],
         path: &str,
@@ -333,6 +353,7 @@ mod tests {
             })
     }
 
+    #[cfg(feature = "azure-attester")]
     fn write_http_response(stream: &mut impl Write, status: u16, body: &[u8]) {
         let headers = format!(
             "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -343,6 +364,7 @@ mod tests {
         stream.write_all(body).unwrap();
     }
 
+    #[cfg(feature = "azure-attester")]
     fn status_text(status: u16) -> &'static str {
         match status {
             200 => "OK",

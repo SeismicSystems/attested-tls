@@ -384,6 +384,7 @@ dependencies = [
  "anyhow",
  "attest-measure",
  "attest-types",
+ "az-cvm-vtpm",
  "az-tdx-vtpm",
  "base64 0.22.1",
  "dcap-qvl 0.3.12 (git+https://github.com/Phala-Network/dcap-qvl.git?rev=f1dcc65371e941a7b83e3234833d23a1fb232ab1)",

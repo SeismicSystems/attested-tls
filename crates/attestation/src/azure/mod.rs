@@ -1,22 +1,31 @@
 //! Microsoft Azure vTPM attestation evidence generation and verification
 mod ak_certificate;
+#[cfg(feature = "azure-attester")]
 mod nv_index;
+mod tpm_quote;
+mod tpms_attest;
+
+#[cfg(feature = "azure-attester")]
 use std::time::Duration;
 
-use ak_certificate::{
-    fetch_ak_intermediates_from_aia,
-    read_ak_certificate_from_tpm,
-    verify_ak_cert_with_azure_roots,
-};
-use az_tdx_vtpm::{hcl, imds, vtpm};
+use ak_certificate::verify_ak_cert_with_azure_roots;
+#[cfg(feature = "azure-attester")]
+use ak_certificate::{fetch_ak_intermediates_from_aia, read_ak_certificate_from_tpm};
+use az_cvm_vtpm::{hcl, tdx};
+#[cfg(feature = "azure-attester")]
+use az_tdx_vtpm::{imds, vtpm};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE as BASE64_URL_SAFE};
 use dcap_qvl::QuoteCollateralV3;
 use num_bigint::BigUint;
 use openssl::{error::ErrorStack, pkey::PKey};
 use pccs::Pccs;
+#[cfg(feature = "azure-attester")]
 use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tpm_quote::TpmQuote;
+pub use tpm_quote::TpmQuoteError;
+pub use tpms_attest::AttestError;
 use x509_parser::prelude::*;
 
 use crate::{
@@ -28,6 +37,7 @@ use crate::{
 };
 
 /// Used in attestation type detection to check if we are on Azure
+#[cfg(feature = "azure-attester")]
 const AZURE_METADATA_API: &str = "http://169.254.169.254/metadata/instance";
 
 /// The attestation evidence payload that gets sent over the channel
@@ -52,7 +62,7 @@ struct TpmAttest {
     #[serde(default, deserialize_with = "deserialize_ak_intermediate_certificates_pem")]
     ak_intermediate_certificates_pem: Vec<String>,
     /// vTPM quote
-    quote: vtpm::Quote,
+    quote: TpmQuote,
     /// Raw TCG event log bytes (UEFI + IMA) [currently not used]
     ///
     /// `/sys/kernel/security/ima/ascii_runtime_measurements`,
@@ -120,16 +130,6 @@ fn unix_time_now_secs() -> Result<u64, MaaError> {
     Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())
 }
 
-/// Used during verification to support both sync and async verification
-/// paths without duplicating code
-struct PreparedAzureAttestation {
-    tdx_quote_bytes: Vec<u8>,
-    hcl_report: hcl::HclReport,
-    var_data_hash: [u8; 32],
-    expected_tdx_input_data: [u8; 64],
-    tpm_attestation: TpmAttest,
-}
-
 /// Generate a TDX attestation on Azure.
 ///
 /// This may perform network calls. Azure's IMDS is queried for the TDX
@@ -141,6 +141,7 @@ struct PreparedAzureAttestation {
 /// need network access or AIA-fetching logic. This keeps verification
 /// deterministic and easier to reuse in constrained verifier environments
 /// such as TEEs, onchain verification, or zero-knowledge proof generation.
+#[cfg(feature = "azure-attester")]
 pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaError> {
     let hcl_report_bytes = vtpm::get_report_with_report_data(&input_data)?;
 
@@ -172,7 +173,7 @@ pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaErro
                 pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::default(), der)
             })
             .collect::<Result<Vec<_>, _>>()?,
-        quote: vtpm::get_quote(&input_data[..32])?,
+        quote: (&vtpm::get_quote(&input_data[..32])?).try_into()?,
         event_log: Vec::new(),
         instance_info: None,
     };
@@ -191,13 +192,23 @@ pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaErro
     Ok(attestation_json)
 }
 
+/// Used during verification to support both sync and async verification
+/// paths without duplicating code
+struct PreparedAzureAttestation {
+    tdx_quote_bytes: Vec<u8>,
+    hcl_report: hcl::HclReport,
+    var_data_hash: [u8; 32],
+    expected_tdx_input_data: [u8; 64],
+    tpm_attestation: TpmAttest,
+}
+
 /// Verify a TDX attestation from Azure
 pub async fn verify_azure_attestation(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
     pccs: Option<Pccs>,
     override_azure_outdated_tcb: bool,
-) -> Result<super::measurements::MultiMeasurements, MaaError> {
+) -> Result<MultiMeasurements, MaaError> {
     let now = unix_time_now_secs()?;
 
     verify_azure_attestation_with_given_timestamp(
@@ -221,7 +232,7 @@ pub fn verify_azure_attestation_sync(
     expected_input_data: [u8; 64],
     pccs: Pccs,
     override_azure_outdated_tcb: bool,
-) -> Result<super::measurements::MultiMeasurements, MaaError> {
+) -> Result<MultiMeasurements, MaaError> {
     let now = unix_time_now_secs()?;
 
     verify_azure_attestation_with_given_timestamp_sync(
@@ -244,7 +255,7 @@ async fn verify_azure_attestation_with_given_timestamp(
     collateral: Option<QuoteCollateralV3>,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<super::measurements::MultiMeasurements, MaaError> {
+) -> Result<MultiMeasurements, MaaError> {
     let PreparedAzureAttestation {
         tdx_quote_bytes,
         hcl_report,
@@ -280,7 +291,7 @@ fn verify_azure_attestation_with_given_timestamp_sync(
     collateral: Option<QuoteCollateralV3>,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<super::measurements::MultiMeasurements, MaaError> {
+) -> Result<MultiMeasurements, MaaError> {
     let PreparedAzureAttestation {
         tdx_quote_bytes,
         hcl_report,
@@ -342,7 +353,7 @@ fn finish_azure_attestation_verification(
     tpm_attestation: TpmAttest,
     expected_input_data: [u8; 64],
     now: u64,
-) -> Result<super::measurements::MultiMeasurements, MaaError> {
+) -> Result<MultiMeasurements, MaaError> {
     let hcl_ak_pub = hcl_report.ak_pub()?;
 
     // Get attestation key from runtime claims
@@ -365,7 +376,7 @@ fn finish_azure_attestation_verification(
     };
 
     // Check that the TD report input data matches the HCL var data hash
-    let td_report: az_tdx_vtpm::tdx::TdReport = hcl_report.try_into()?;
+    let td_report: tdx::TdReport = hcl_report.try_into()?;
     if var_data_hash != td_report.report_mac.reportdata[..32] {
         return Err(MaaError::TdReportInputMismatch);
     }
@@ -424,6 +435,49 @@ pub fn get_measurements(input: &[u8]) -> Result<MultiMeasurements, MaaError> {
     let vtpm_quote = attestation_document.tpm_attestation.quote;
     let pcrs = vtpm_quote.pcrs_sha256();
     Ok(MultiMeasurements::from_pcrs(pcrs))
+}
+
+/// Detect whether we are on Azure and can make an Azure vTPM attestation
+#[cfg(feature = "azure-attester")]
+pub fn detect_azure_cvm() -> Result<bool, MaaError> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
+    let resp = match agent.get(AZURE_METADATA_API).set("Metadata", "true").call() {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::debug!("Azure CVM detection failed: Azure metadata API request failed: {err}");
+            return Ok(false);
+        }
+    };
+
+    if resp.status() != 200 {
+        tracing::debug!(
+            "Azure CVM detection failed: metadata API returned non-success status: {}",
+            resp.status()
+        );
+        return Ok(false);
+    }
+
+    // Ensure the response has a JSON content type
+    let content_type = resp
+        .header(CONTENT_TYPE.as_str())
+        .map(|value| value.to_owned())
+        .ok_or_else(|| MaaError::AzureMetadataApiNonJsonResponse { content_type: None })?;
+
+    if !content_type.to_lowercase().starts_with("application/json") {
+        return Err(MaaError::AzureMetadataApiNonJsonResponse { content_type: Some(content_type) });
+    }
+
+    match az_tdx_vtpm::is_tdx_cvm() {
+        Ok(true) => Ok(true),
+        Ok(false) => {
+            tracing::debug!("Azure CVM detection failed: platform is not an Azure TDX CVM");
+            Ok(false)
+        }
+        Err(err) => {
+            tracing::debug!("Azure CVM detection failed: Azure TDX CVM probe failed: {err}");
+            Ok(false)
+        }
+    }
 }
 
 /// JSON Web Key used in [HclRuntimeClaims]
@@ -493,57 +547,10 @@ impl RsaPubKey {
     }
 }
 
-/// Detect whether we are on Azure and can make an Azure vTPM attestation
-pub fn detect_azure_cvm() -> Result<bool, MaaError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
-    let resp = match agent.get(AZURE_METADATA_API).set("Metadata", "true").call() {
-        Ok(resp) => resp,
-        Err(err) => {
-            tracing::debug!("Azure CVM detection failed: Azure metadata API request failed: {err}");
-            return Ok(false);
-        }
-    };
-
-    if resp.status() != 200 {
-        tracing::debug!(
-            "Azure CVM detection failed: metadata API returned non-success status: {}",
-            resp.status()
-        );
-        return Ok(false);
-    }
-
-    // Ensure the response has a JSON content type
-    let content_type = resp
-        .header(CONTENT_TYPE.as_str())
-        .map(|value| value.to_owned())
-        .ok_or_else(|| MaaError::AzureMetadataApiNonJsonResponse { content_type: None })?;
-
-    if !content_type.to_lowercase().starts_with("application/json") {
-        return Err(MaaError::AzureMetadataApiNonJsonResponse { content_type: Some(content_type) });
-    }
-
-    match az_tdx_vtpm::is_tdx_cvm() {
-        Ok(true) => Ok(true),
-        Ok(false) => {
-            tracing::debug!("Azure CVM detection failed: platform is not an Azure TDX CVM");
-            Ok(false)
-        }
-        Err(err) => {
-            tracing::debug!("Azure CVM detection failed: Azure TDX CVM probe failed: {err}");
-            Ok(false)
-        }
-    }
-}
-
 /// An error when generating or verifying a Microsoft Azure vTPM attestation
+/// (MAA is short for Microsoft Azure Attestation)
 #[derive(Error, Debug)]
 pub enum MaaError {
-    #[error("Report: {0}")]
-    Report(#[from] az_tdx_vtpm::report::ReportError),
-    #[error("IMDS: {0}")]
-    Imds(#[from] imds::ImdsError),
-    #[error("vTPM report: {0}")]
-    VtpmReport(#[from] az_tdx_vtpm::vtpm::ReportError),
     #[error("HCL: {0}")]
     Hcl(#[from] hcl::HclError),
     #[error("Azure attestation evidence payload is too large: {actual} bytes > {max} bytes")]
@@ -554,26 +561,8 @@ pub enum MaaError {
     SystemTime(#[from] std::time::SystemTimeError),
     #[error("HTTP client: {0}")]
     Reqwest(#[from] reqwest::Error),
-    #[error("AIA URL is not HTTP(S): {url}")]
-    UnsupportedAiaUrl { url: String },
-    #[error("Failed to fetch AIA issuer certificate from {url}: {source}")]
-    AiaFetch { url: String, source: Box<ureq::Error> },
-    #[error(
-        "Azure vTPM AK issuer chain exceeded maximum intermediate certificate count: {max_depth}"
-    )]
-    AkIssuerChainTooDeep { max_depth: usize },
-    #[error("Azure vTPM AK issuer chain could not be built to a pinned Azure root certificate")]
-    AkIssuerChainIncomplete,
-    #[error("IO: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("vTPM quote: {0}")]
-    VtpmQuote(#[from] vtpm::QuoteError),
-    #[error("AK public key: {0}")]
-    AkPub(#[from] vtpm::AKPubError),
     #[error("vTPM quote could not be verified: {0}")]
-    TpmQuoteVerify(#[from] vtpm::VerifyError),
-    #[error("vTPM read: {0}")]
-    TssEsapi(#[from] tss_esapi::Error),
+    TpmQuoteVerify(#[from] tpm_quote::TpmQuoteError),
     #[error("PEM encode: {0}")]
     Pem(#[from] pem_rfc7468::Error),
     #[error("TD report input does not match hashed HCL var data")]
@@ -614,13 +603,48 @@ pub enum MaaError {
     ClaimsUserDataInputMismatch,
     #[error("DCAP verification: {0}")]
     DcapVerification(#[from] crate::dcap::DcapVerificationError),
+
+    // Errors that can only occur during evidence generation on an Azure CVM
+    #[cfg(feature = "azure-attester")]
+    #[error("Report: {0}")]
+    Report(#[from] az_tdx_vtpm::report::ReportError),
+    #[cfg(feature = "azure-attester")]
+    #[error("IMDS: {0}")]
+    Imds(#[from] az_tdx_vtpm::imds::ImdsError),
+    #[cfg(feature = "azure-attester")]
+    #[error("vTPM report: {0}")]
+    VtpmReport(#[from] az_tdx_vtpm::vtpm::ReportError),
+    #[cfg(feature = "azure-attester")]
+    #[error("vTPM quote: {0}")]
+    VtpmQuote(#[from] az_tdx_vtpm::vtpm::QuoteError),
+    #[cfg(feature = "azure-attester")]
+    #[error("vTPM read: {0}")]
+    TssEsapi(#[from] tss_esapi::Error),
+    #[cfg(feature = "azure-attester")]
+    #[error("IO: {0}")]
+    Io(#[from] std::io::Error),
+    #[cfg(feature = "azure-attester")]
+    #[error("AIA URL is not HTTP(S): {url}")]
+    UnsupportedAiaUrl { url: String },
+    #[cfg(feature = "azure-attester")]
+    #[error("Failed to fetch AIA issuer certificate from {url}: {source}")]
+    AiaFetch { url: String, source: Box<ureq::Error> },
+    #[cfg(feature = "azure-attester")]
+    #[error(
+        "Azure vTPM AK issuer chain exceeded maximum intermediate certificate count: {max_depth}"
+    )]
+    AkIssuerChainTooDeep { max_depth: usize },
+    #[cfg(feature = "azure-attester")]
+    #[error("Azure vTPM AK issuer chain could not be built to a pinned Azure root certificate")]
+    AkIssuerChainIncomplete,
+    #[cfg(feature = "azure-attester")]
     #[error(
         "Azure metadata API returned a successful response with non-JSON content-type: {content_type:?}"
     )]
     AzureMetadataApiNonJsonResponse { content_type: Option<String> },
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "azure-attester"))]
 mod test_utils {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE as BASE64_URL_SAFE};
 
@@ -633,7 +657,7 @@ mod test_utils {
     /// Run with:
     ///
     /// ```text
-    /// cargo test -p attestation --features azure capture_azure_fixture -- --ignored --nocapture
+    /// cargo test -p attestation --features azure-attester capture_azure_fixture -- --ignored --nocapture
     /// ```
     ///
     /// This writes two timestamped YAML files:
@@ -803,7 +827,7 @@ mod tests {
     /// AK intermediates fetched from the leaf certificate's AIA URLs.
     #[tokio::test]
     async fn test_verify() {
-        // generated using [capture_azure_fixture] above.
+        // generated using the attester module's [capture_azure_fixture].
         let attestation_bytes: &'static [u8] =
             include_bytes!("../../test-assets/azure-tdx-with-ak-intermediates-1780922561.yaml");
         let collateral_bytes: &'static [u8] = include_bytes!(
