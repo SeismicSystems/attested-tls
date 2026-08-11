@@ -33,7 +33,7 @@ use thiserror::Error;
 use crate::{
     dcap::DcapVerificationError,
     gcp::{GcpFirmwareCache, GcpProvenanceChecker, GcpProvenanceError},
-    measurements::MeasurementPolicy,
+    measurements::{MeasurementFormatError, MeasurementPolicy},
 };
 
 #[cfg(test)]
@@ -433,6 +433,8 @@ pub struct AttestationVerifier {
     known_gcp_firmware: GcpFirmwareCache,
     /// Cached PPIDs that have a valid GCP host-registry document
     gcp_provenance_checker: GcpProvenanceChecker,
+    /// Dynamic measurement policy to re-fetch from file or URL
+    dynamic_measurement_policy: Option<String>,
 }
 
 /// Options used to construct an [AttestationVerifier]
@@ -441,6 +443,8 @@ pub struct AttestationVerifierBuilder {
     measurement_policy: MeasurementPolicy,
     /// Internal PCCS setting
     pccs_mode: PccsMode,
+    /// A dynamic measurement policy file or URL
+    dynamic_measurement_policy: Option<String>,
     /// A PCCS service to use - defaults to Intel PCS
     pccs_url: Option<String>,
     dump_dcap_quotes: bool,
@@ -463,6 +467,7 @@ impl AttestationVerifierBuilder {
             internal_pccs,
             known_gcp_firmware: GcpFirmwareCache::new(),
             gcp_provenance_checker: GcpProvenanceChecker::new(),
+            dynamic_measurement_policy: self.dynamic_measurement_policy,
         }
     }
 
@@ -492,6 +497,11 @@ impl AttestationVerifierBuilder {
         self.pccs_url = Some(pccs_url);
         self
     }
+
+    pub fn with_dynamic_measurements_file_or_url(mut self, file_or_url: String) -> Self {
+        self.dynamic_measurement_policy = Some(file_or_url);
+        self
+    }
 }
 
 impl AttestationVerifier {
@@ -502,6 +512,7 @@ impl AttestationVerifier {
             pccs_url: None,
             dump_dcap_quotes: false,
             override_azure_outdated_tcb: false,
+            dynamic_measurement_policy: None,
         }
     }
 
@@ -515,6 +526,7 @@ impl AttestationVerifier {
             internal_pccs: None,
             known_gcp_firmware: GcpFirmwareCache::new(),
             gcp_provenance_checker: GcpProvenanceChecker::new(),
+            dynamic_measurement_policy: None,
         }
     }
 
@@ -528,6 +540,7 @@ impl AttestationVerifier {
             internal_pccs: None,
             known_gcp_firmware: GcpFirmwareCache::new(),
             gcp_provenance_checker: GcpProvenanceChecker::new(),
+            dynamic_measurement_policy: None,
         }
     }
 
@@ -541,6 +554,7 @@ impl AttestationVerifier {
             internal_pccs: Some(Pccs::new(Some(pccs_url))),
             known_gcp_firmware: GcpFirmwareCache::new(),
             gcp_provenance_checker: GcpProvenanceChecker::new(),
+            dynamic_measurement_policy: None,
         }
     }
 
@@ -631,11 +645,28 @@ impl AttestationVerifier {
             .attestation_evidence
             .as_ref()
             .map(|evidence| evidence.platform.clone());
-        self.measurement_policy_read().check_measurement_with_gcp_cache(
+        let policy_check = self.measurement_policy_read().check_measurement_with_gcp_cache(
             &verified.measurements,
             platform_metadata.as_ref(),
             Some(&self.known_gcp_firmware),
-        )?;
+        );
+
+        if let Err(err) = policy_check {
+            // If this fails, and we have dynamic measurement policy, re-retrieve our
+            // measurement policy, then check the policy a second time
+            if let Some(file_or_url) = &self.dynamic_measurement_policy {
+                let new_measurement_policy =
+                    MeasurementPolicy::from_file_or_url(file_or_url.to_string()).await?;
+                self.set_measurement_policy(new_measurement_policy);
+                self.measurement_policy_read().check_measurement_with_gcp_cache(
+                    &verified.measurements,
+                    platform_metadata.as_ref(),
+                    Some(&self.known_gcp_firmware),
+                )?;
+            } else {
+                return Err(err);
+            }
+        }
 
         tracing::debug!("Verification successful");
         Ok(Some(verified))
@@ -872,6 +903,8 @@ pub enum AttestationError {
     AttestationTypeNotAccepted,
     #[error("Measurements not accepted")]
     MeasurementsNotAccepted,
+    #[error("Failed to refresh measurement policy: {0}")]
+    MeasurementPolicyRefresh(#[from] MeasurementFormatError),
     #[cfg(feature = "azure-verifier")]
     #[error("Microsoft Azure Attestation (MAA): {0}")]
     Maa(#[from] azure::MaaError),
@@ -995,5 +1028,34 @@ mod tests {
         verifier_clone.set_measurement_policy(MeasurementPolicy::expect_none());
 
         assert!(matches!(verifier.verify_attestation_sync(message, input_data), Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn dynamic_measurement_policy_refetches_on_mismatch() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let policy_path = temp_dir.path().join("measurements.json");
+        tokio::fs::write(&policy_path, br#"[{"attestation_type":"none"}]"#).await.unwrap();
+
+        let initial_policy = MeasurementPolicy::from_file(policy_path.clone()).await.unwrap();
+        let verifier = AttestationVerifier::builder(initial_policy)
+            .with_no_internal_pccs()
+            .with_dynamic_measurements_file_or_url(policy_path.to_string_lossy().into_owned())
+            .build();
+
+        let input_data = [7u8; 64];
+        let quote = dcap::create_dcap_attestation(input_data).unwrap();
+        let attestation = AttestationEvidence {
+            quote,
+            platform: mock_platform_metadata(AttestationType::DcapTdx).unwrap(),
+        };
+        let measurements = measurements::mock_dcap_measurements();
+
+        assert!(verifier.measurement_policy().check_measurement(&measurements, None).is_err());
+
+        tokio::fs::write(&policy_path, br#"[{"attestation_type":"dcap-tdx"}]"#).await.unwrap();
+
+        verifier.verify_attestation(attestation.into(), input_data).await.unwrap();
+
+        assert!(verifier.measurement_policy().check_measurement(&measurements, None).is_ok());
     }
 }
