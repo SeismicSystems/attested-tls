@@ -63,6 +63,10 @@ azure-attester = ["azure-verifier", "dep:az-tdx-vtpm", "dep:tss-esapi"]
 # over bytes; builds and runs on any platform, including macOS.
 azure-verifier = ["dep:az-cvm-vtpm", "dep:openssl"]
 
+# Deprecated alias for `azure-attester`, kept only for backwards
+# compatibility. Use `azure-attester` or `azure-verifier` instead.
+azure = ["azure-attester"]
+
 # Allows mock quotes used in tests and exposes related functions for testing
 mock = ["dep:mock-tdx"]
 
