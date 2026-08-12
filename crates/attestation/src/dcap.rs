@@ -210,6 +210,7 @@ fn verify_dcap_attestation_with_collateral_and_timestamp(
     Ok((
         VerifiedAttestation {
             measurements,
+            expected_measurements: None,
             endorsements: EndorsementSnapshot::dcap(collateral, now),
         },
         quote,
@@ -243,6 +244,7 @@ pub async fn verify_dcap_attestation(
     Ok((
         VerifiedAttestation {
             measurements,
+            expected_measurements: None,
             endorsements: EndorsementSnapshot::dcap(collateral, now),
         },
         quote,
@@ -270,6 +272,7 @@ pub fn verify_dcap_attestation_sync(
     Ok((
         VerifiedAttestation {
             measurements,
+            expected_measurements: None,
             endorsements: EndorsementSnapshot::dcap(collateral, now),
         },
         quote,
@@ -353,7 +356,7 @@ mod tests {
         let fixture_collateral: QuoteCollateralV3 =
             serde_saphyr::from_slice(collateral_bytes).unwrap();
 
-        let (VerifiedAttestation { measurements: async_measurements, endorsements }, _) =
+        let (VerifiedAttestation { measurements: async_measurements, endorsements, .. }, _) =
             verify_dcap_attestation_with_given_timestamp(
                 attestation_bytes.to_vec(),
                 [

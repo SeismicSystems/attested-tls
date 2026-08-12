@@ -121,7 +121,11 @@ async fn verify_azure_attestation_with_given_timestamp(
         expected_input_data,
         now,
     )?;
-    Ok(VerifiedAttestation { measurements, endorsements: dcap.endorsements })
+    Ok(VerifiedAttestation {
+        measurements,
+        expected_measurements: None,
+        endorsements: dcap.endorsements,
+    })
 }
 
 /// Synchronous version of the verifier
@@ -157,7 +161,11 @@ fn verify_azure_attestation_with_given_timestamp_sync(
         expected_input_data,
         now,
     )?;
-    Ok(VerifiedAttestation { measurements, endorsements: dcap.endorsements })
+    Ok(VerifiedAttestation {
+        measurements,
+        expected_measurements: None,
+        endorsements: dcap.endorsements,
+    })
 }
 
 /// Parses the attestation during verification
@@ -470,6 +478,7 @@ mod tests {
         let VerifiedAttestation {
             measurements: async_measurements,
             endorsements: async_endorsements,
+            ..
         } = verify_azure_attestation_with_given_timestamp(
             attestation_json.clone(),
             [0; 64],
@@ -484,6 +493,7 @@ mod tests {
         let VerifiedAttestation {
             measurements: sync_measurements,
             endorsements: sync_endorsements,
+            ..
         } = verify_azure_attestation_with_given_timestamp_sync(
             attestation_json,
             [0; 64],

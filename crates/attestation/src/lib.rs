@@ -24,7 +24,7 @@ pub use attest_types::{AttestationEvidence, PlatformMetadata};
 /// Re-exported so callers can archive [EndorsementSnapshot::dcap] without
 /// depending on `dcap-qvl` directly
 pub use dcap_qvl::QuoteCollateralV3;
-use measurements::MultiMeasurements;
+use measurements::{ExpectedMeasurements, MultiMeasurements};
 use parity_scale_codec::{Decode, Encode};
 use pccs::{Pccs, PccsError};
 use serde::{Deserialize, Serialize};
@@ -413,6 +413,10 @@ pub struct VerifiedAttestation {
     /// chain to the TD quote: its report data commits to the HCL var data
     /// carrying the AK public key that signs the vTPM quote
     pub measurements: MultiMeasurements,
+    /// The reference measurements from the policy record that matched this
+    /// attestation. This is populated by [`AttestationVerifier`], after the
+    /// platform-specific verification has completed.
+    pub expected_measurements: Option<ExpectedMeasurements>,
     /// The half of a reproducible verdict that does not ride in the
     /// evidence
     pub endorsements: EndorsementSnapshot,
@@ -612,8 +616,8 @@ impl AttestationVerifier {
         }
     }
 
-    /// Verify an attestation, and ensure the measurements match one of our
-    /// accepted measurements
+    /// Verify an attestation, and return the expected measurements from the
+    /// matching policy record.
     pub async fn verify_attestation(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
@@ -626,7 +630,7 @@ impl AttestationVerifier {
             log_attestation(&attestation_exchange_message);
         }
 
-        let verified = match attestation_type {
+        let mut verified = match attestation_type {
             AttestationType::None => {
                 if self.has_remote_attestation() {
                     return Err(AttestationError::AttestationTypeNotAccepted);
@@ -687,29 +691,35 @@ impl AttestationVerifier {
             Some(&self.known_gcp_firmware),
         );
 
-        if let Err(err) = policy_check {
-            // If this fails, and we have dynamic measurement policy,
-            // re-retrieve our measurement policy, then check
-            // the policy a second time
-            if let Some(file_or_url) = &self.dynamic_measurement_policy {
-                let new_measurement_policy =
-                    MeasurementPolicy::from_file_or_url(file_or_url.to_string()).await?;
-                let measurement_policy =
-                    self.set_measurement_policy(new_measurement_policy, policy_state.generation);
-                measurement_policy.check_measurement_with_gcp_cache(
-                    &verified.measurements,
-                    platform_metadata.as_ref(),
-                    Some(&self.known_gcp_firmware),
-                )?;
-            } else {
-                return Err(err);
+        let matched_measurements = match policy_check {
+            Ok(matched_measurements) => matched_measurements,
+            Err(err) => {
+                // If this fails, and we have dynamic measurement policy,
+                // re-retrieve our measurement policy, then check
+                // the policy a second time
+                if let Some(file_or_url) = &self.dynamic_measurement_policy {
+                    let new_measurement_policy =
+                        MeasurementPolicy::from_file_or_url(file_or_url.to_string()).await?;
+                    let measurement_policy = self
+                        .set_measurement_policy(new_measurement_policy, policy_state.generation);
+                    measurement_policy.check_measurement_with_gcp_cache(
+                        &verified.measurements,
+                        platform_metadata.as_ref(),
+                        Some(&self.known_gcp_firmware),
+                    )?
+                } else {
+                    return Err(err);
+                }
             }
-        }
+        };
 
         tracing::debug!("Verification successful");
+        verified.expected_measurements = Some(matched_measurements);
         Ok(Some(verified))
     }
 
+    /// Verify an attestation synchronously, and return the expected
+    /// measurements from the matching policy record.
     pub fn verify_attestation_sync(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
@@ -722,7 +732,7 @@ impl AttestationVerifier {
             log_attestation(&attestation_exchange_message);
         }
 
-        let verified = match attestation_type {
+        let mut verified = match attestation_type {
             AttestationType::None => {
                 if self.has_remote_attestation() {
                     return Err(AttestationError::AttestationTypeNotAccepted);
@@ -788,23 +798,27 @@ impl AttestationVerifier {
             Some(&self.known_gcp_firmware),
         );
 
-        if let Err(err) = policy_check {
-            if let Some(file_or_url) = &self.dynamic_measurement_policy {
-                let new_measurement_policy =
-                    MeasurementPolicy::from_file_or_url_sync(file_or_url.to_string())?;
-                let measurement_policy =
-                    self.set_measurement_policy(new_measurement_policy, policy_state.generation);
-                measurement_policy.check_measurement_with_gcp_cache(
-                    &verified.measurements,
-                    platform_metadata.as_ref(),
-                    Some(&self.known_gcp_firmware),
-                )?;
-            } else {
-                return Err(err);
+        let matched_measurements = match policy_check {
+            Ok(matched_measurements) => matched_measurements,
+            Err(err) => {
+                if let Some(file_or_url) = &self.dynamic_measurement_policy {
+                    let new_measurement_policy =
+                        MeasurementPolicy::from_file_or_url_sync(file_or_url.to_string())?;
+                    let measurement_policy = self
+                        .set_measurement_policy(new_measurement_policy, policy_state.generation);
+                    measurement_policy.check_measurement_with_gcp_cache(
+                        &verified.measurements,
+                        platform_metadata.as_ref(),
+                        Some(&self.known_gcp_firmware),
+                    )?
+                } else {
+                    return Err(err);
+                }
             }
-        }
+        };
 
         tracing::debug!("Verification successful");
+        verified.expected_measurements = Some(matched_measurements);
         Ok(Some(verified))
     }
 
@@ -1137,6 +1151,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verifier_returns_matched_no_attestation_measurements() {
+        let verifier = AttestationVerifier::expect_none();
+        let attestation = AttestationExchangeMessage::without_attestation();
+        let input_data = [0u8; 64];
+
+        assert_eq!(
+            verifier.verify_attestation(attestation.clone(), input_data).await.unwrap(),
+            ExpectedMeasurements::NoAttestation
+        );
+        assert_eq!(
+            verifier.verify_attestation_sync(attestation, input_data).unwrap(),
+            ExpectedMeasurements::NoAttestation
+        );
+    }
+
+    #[tokio::test]
     async fn mock_verifier_supports_sync_verification() {
         let input_data = [7u8; 64];
         let quote = dcap::create_dcap_attestation(input_data).unwrap();
@@ -1154,7 +1184,10 @@ mod tests {
 
         let result = verifier.verify_attestation_sync(attestation_evidence.into(), input_data);
 
-        assert!(result.is_ok(), "expected sync mock verification to succeed: {result:?}");
+        assert!(
+            matches!(result, Ok(ExpectedMeasurements::Dcap(_))),
+            "expected sync mock verification to return matched DCAP measurements: {result:?}"
+        );
     }
 
     /// On the fetching path, the reported bundle is the one the fetch
@@ -1218,7 +1251,10 @@ mod tests {
         let generation = verifier_clone.measurement_policy_read().generation;
         verifier_clone.set_measurement_policy(MeasurementPolicy::expect_none(), generation);
 
-        assert!(matches!(verifier.verify_attestation_sync(message, input_data), Ok(None)));
+        assert!(matches!(
+            verifier.verify_attestation_sync(message, input_data),
+            Ok(ExpectedMeasurements::NoAttestation)
+        ));
     }
 
     #[test]
@@ -1258,7 +1294,10 @@ mod tests {
 
         tokio::fs::write(&policy_path, br#"[{"attestation_type":"dcap-tdx"}]"#).await.unwrap();
 
-        verifier.verify_attestation(attestation.into(), input_data).await.unwrap();
+        let matched_measurements =
+            verifier.verify_attestation(attestation.into(), input_data).await.unwrap();
+
+        assert!(matches!(matched_measurements, ExpectedMeasurements::Dcap(_)));
 
         assert!(verifier.measurement_policy().check_measurement(&measurements, None).is_ok());
     }
@@ -1358,6 +1397,9 @@ mod tests {
 
         std::fs::write(&policy_path, br#"[{"attestation_type":"dcap-tdx"}]"#).unwrap();
 
-        verifier.verify_attestation_sync(attestation.into(), input_data).unwrap();
+        let matched_measurements =
+            verifier.verify_attestation_sync(attestation.into(), input_data).unwrap();
+
+        assert!(matches!(matched_measurements, ExpectedMeasurements::Dcap(_)));
     }
 }
