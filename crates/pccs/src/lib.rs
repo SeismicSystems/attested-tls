@@ -43,6 +43,13 @@ const REFRESH_RETRY_SECS: u64 = 60;
 const STARTUP_PREWARM_CONCURRENCY: usize = 8;
 
 /// PCCS collateral cache with proactive background refresh
+///
+/// Fetching runs over rustls-backed HTTP, so the application must install a
+/// process-level rustls [crypto provider] before collateral can be fetched,
+/// e.g. `rustls::crypto::aws_lc_rs::default_provider().install_default()`.
+/// Without one, fetches fail with [`PccsError::MissingCryptoProvider`].
+///
+/// [crypto provider]: https://github.com/rustls/rustls#cryptography-providers
 #[derive(Clone)]
 pub struct Pccs {
     /// The URL of the service used to fetch collateral (PCS / PCCS)
@@ -300,7 +307,11 @@ impl Pccs {
         let fmspcs = match self.fetch_fmspcs().await {
             Ok(fmspcs) => fmspcs,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to fetch FMSPC list for startup pre-provision");
+                tracing::warn!(
+                    error = %e,
+                    "Failed to fetch FMSPC list for startup pre-provision; continuing \
+                     without a warm cache — collateral is fetched on demand"
+                );
                 return PrewarmOutcome::Failed(format!(
                     "Failed to fetch FMSPC list for prewarm: {e}"
                 ));
@@ -391,6 +402,13 @@ impl Pccs {
     async fn fetch_fmspcs(&self) -> Result<Vec<FmspcEntry>, PccsError> {
         #[cfg(test)]
         install_test_crypto_provider();
+
+        // Without a process-level crypto provider, building the reqwest
+        // client panics; error instead, so the pre-warm task logs a warning
+        // rather than dumping a panic backtrace.
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            return Err(PccsError::MissingCryptoProvider);
+        }
 
         let url = format!("{}/sgx/certification/v4/fmspcs", self.url);
         let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
@@ -718,6 +736,12 @@ pub enum PccsError {
     SystemTime(#[from] std::time::SystemTimeError),
     #[error("HTTP client: {0}")]
     Reqwest(#[from] reqwest::Error),
+    #[error(
+        "no process-level rustls crypto provider is installed; install one at application \
+         startup, e.g. `rustls::crypto::aws_lc_rs::default_provider().install_default()` — \
+         see https://github.com/rustls/rustls#cryptography-providers"
+    )]
+    MissingCryptoProvider,
     #[error("Failed to fetch FMSPC: {0}")]
     FmspcFetch(reqwest::StatusCode),
     #[error("JSON: {0}")]
