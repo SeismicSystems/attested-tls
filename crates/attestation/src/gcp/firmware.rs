@@ -77,7 +77,8 @@ mod tests {
 
     use super::GcpFirmwareCache;
     use crate::{
-        AttestationType, PlatformMetadata,
+        AttestationType,
+        PlatformMetadata,
         dcap::{get_quote_input_data, verify_dcap_attestation_with_given_timestamp},
         measurements::{ExpectedMeasurements, MeasurementPolicy, MeasurementRecord},
     };
