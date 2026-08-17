@@ -15,18 +15,21 @@ const GCP_PROVENANCE_REGISTRY_URL: &str =
 
 /// Maximum size in bytes of GCP provenance documents
 const GCP_PROVENANCE_DOCUMENT_MAX_BYTES: u64 = 16 * 1024;
+/// PPIDs in Intel PCK certificates are 128-bit values
+const GCP_PPID_BYTES: usize = 16;
 /// How long a cached PPID remains trusted before revalidation
 const GCP_PROVENANCE_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Overall timeout for fetching a provenance document (covers DNS, connect,
 /// TLS handshake and read)
-const GCP_PROVENANCE_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// This matches the timeout in Google's Go provenance checker tool
+const GCP_PROVENANCE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Checks PPIDs extracted from DCAP quotes against Google's public bucket,
 /// to establish whether this is a GCP machine
 #[derive(Clone, Debug)]
 pub(crate) struct GcpProvenanceChecker {
     /// Cached entries with retrieval timestamp
-    known_gcp_ppids: Arc<RwLock<HashMap<Vec<u8>, Instant>>>,
+    known_gcp_ppids: Arc<RwLock<HashMap<[u8; GCP_PPID_BYTES], Instant>>>,
 }
 
 impl GcpProvenanceChecker {
@@ -73,8 +76,8 @@ impl GcpProvenanceChecker {
                 .known_gcp_ppids
                 .read()
                 .map_err(|err| GcpProvenanceError::CacheLock(err.to_string()))?;
-            if let Some(stored_at) = known_gcp_ppids.get(&ppid) &&
-                is_cache_entry_fresh(*stored_at, now)
+            if let Some(stored_at) = known_gcp_ppids.get(&ppid)
+                && is_cache_entry_fresh(*stored_at, now)
             {
                 return Ok(());
             }
@@ -114,7 +117,7 @@ fn is_cache_entry_fresh(stored_at: Instant, now: Instant) -> bool {
     now.checked_duration_since(stored_at).is_some_and(|age| age <= GCP_PROVENANCE_CACHE_TTL)
 }
 
-fn extract_ppid_from_quote(quote: &Quote) -> Result<Vec<u8>, GcpProvenanceError> {
+fn extract_ppid_from_quote(quote: &Quote) -> Result<[u8; GCP_PPID_BYTES], GcpProvenanceError> {
     let cert_chain = intel::extract_cert_chain(quote)
         .map_err(|err| GcpProvenanceError::PpidExtraction(err.to_string()))?;
     let leaf = cert_chain.first().ok_or(GcpProvenanceError::NoPckCertificate)?;
@@ -124,14 +127,32 @@ fn extract_ppid_from_quote(quote: &Quote) -> Result<Vec<u8>, GcpProvenanceError>
     if extension.ppid.is_empty() {
         return Err(GcpProvenanceError::EmptyPpid);
     }
-
-    Ok(extension.ppid)
+    extension
+        .ppid
+        .try_into()
+        .map_err(|ppid: Vec<u8>| GcpProvenanceError::InvalidPpidLength(ppid.len()))
 }
 
+/// Synchronously attempt to fetch provenance document
 fn fetch_provenance_document(url: &str) -> Result<String, GcpProvenanceError> {
     let agent = ureq::AgentBuilder::new().timeout(GCP_PROVENANCE_FETCH_TIMEOUT).build();
-    let response =
-        agent.get(url).call().map_err(|err| GcpProvenanceError::RegistryFetch(err.to_string()))?;
+    let response = match agent.get(url).call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, _)) => {
+            return Err(GcpProvenanceError::RegistryFetch(format!("HTTP status {status}")));
+        }
+        Err(err) => {
+            tracing::warn!(url, error = %err, "GCP provenance registry unavailable");
+            return Err(GcpProvenanceError::RegistryUnavailable(err.to_string()));
+        }
+    };
+
+    if response.status() != 200 {
+        return Err(GcpProvenanceError::RegistryFetch(format!(
+            "unexpected HTTP status {}",
+            response.status()
+        )));
+    }
 
     let mut limited_reader = response.into_reader().take(GCP_PROVENANCE_DOCUMENT_MAX_BYTES + 1);
     let mut document = String::new();
@@ -168,10 +189,14 @@ pub enum GcpProvenanceError {
     NoPckCertificate,
     #[error("PPID is empty")]
     EmptyPpid,
+    #[error("PPID has invalid length: {0} bytes (expected 16)")]
+    InvalidPpidLength(usize),
     #[error("PPID extraction: {0}")]
     PpidExtraction(String),
     #[error("registry fetch: {0}")]
     RegistryFetch(String),
+    #[error("registry unavailable: {0}")]
+    RegistryUnavailable(String),
     #[error("provenance document is invalid")]
     InvalidDocument,
     #[error("provenance document exceeds maximum size")]
@@ -313,6 +338,24 @@ mod tests {
         let attestation = dcap::create_dcap_attestation([0u8; 64]).unwrap();
         let quote = Quote::parse(&attestation).unwrap();
         let (addr, request_handle) = spawn_test_registry_server(404, "not found");
+
+        let err = GcpProvenanceChecker::new()
+            .verify_provenance_with_registry_url_sync_at(
+                &quote,
+                &format!("http://{addr}"),
+                Instant::now(),
+            )
+            .unwrap_err();
+
+        request_handle.join().unwrap();
+        assert!(matches!(err, GcpProvenanceError::RegistryFetch(_)));
+    }
+
+    #[test]
+    fn provenance_check_rejects_non_200_success_status() {
+        let attestation = dcap::create_dcap_attestation([0u8; 64]).unwrap();
+        let quote = Quote::parse(&attestation).unwrap();
+        let (addr, request_handle) = spawn_test_registry_server(201, "created");
 
         let err = GcpProvenanceChecker::new()
             .verify_provenance_with_registry_url_sync_at(
