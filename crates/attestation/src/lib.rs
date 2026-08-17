@@ -147,6 +147,15 @@ impl AttestationType {
         }
     }
 
+    /// Whether a measurement policy record with this attestation type may
+    /// be used to check a peer reporting the given attestation type.
+    ///
+    /// `dcap-tdx` policy also accepts a `gcp-tdx` attestation - as dcap-tdx
+    /// effectively means DCAP on any platform.
+    pub fn accepts(&self, peer: AttestationType) -> bool {
+        matches!((self, peer), (AttestationType::DcapTdx, AttestationType::GcpTdx)) || *self == peer
+    }
+
     /// Detect what platform we are on by attempting an attestation
     pub fn detect() -> Result<Self, AttestationError> {
         // First attempt azure, if the feature is present
@@ -641,8 +650,8 @@ fn running_on_gcp() -> Result<bool, AttestationError> {
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {
-        return Ok(r.status() == 200 &&
-            r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
+        return Ok(r.status() == 200
+            && r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
     }
 
     Ok(false)

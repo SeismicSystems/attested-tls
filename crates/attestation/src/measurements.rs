@@ -447,7 +447,7 @@ impl MeasurementPolicy {
         if self.accepted_measurements.iter().any(|measurement_record| match measurements {
             MultiMeasurements::Dcap(dcap_measurements) => match &measurement_record.measurements {
                 ExpectedMeasurements::Dcap(expected) => {
-                    if measurement_record.attestation_type != attestation_type {
+                    if !measurement_record.attestation_type.accepts(attestation_type) {
                         return false;
                     }
                     // All measurements in our policy must be given and must match
@@ -460,7 +460,7 @@ impl MeasurementPolicy {
                     true
                 }
                 ExpectedMeasurements::Image(image_hashes) => {
-                    measurement_record.attestation_type == attestation_type &&
+                    measurement_record.attestation_type.accepts(attestation_type) &&
                         compare_portable_dcap_measurement(
                             image_hashes,
                             dcap_measurements,
@@ -471,7 +471,7 @@ impl MeasurementPolicy {
                 ExpectedMeasurements::Azure(_) | ExpectedMeasurements::NoAttestation => false,
             },
             MultiMeasurements::Azure(azure_measurements) => {
-                if measurement_record.attestation_type != attestation_type {
+                if !measurement_record.attestation_type.accepts(attestation_type) {
                     return false;
                 }
                 if let ExpectedMeasurements::Azure(expected) = &measurement_record.measurements {
@@ -486,7 +486,7 @@ impl MeasurementPolicy {
                 false
             }
             MultiMeasurements::NoAttestation => {
-                measurement_record.attestation_type == attestation_type &&
+                measurement_record.attestation_type.accepts(attestation_type) &&
                     matches!(
                         measurement_record.measurements,
                         ExpectedMeasurements::NoAttestation
@@ -1020,6 +1020,23 @@ mod tests {
             policy.check_measurement(&measurements, None).unwrap_err(),
             AttestationError::MeasurementsNotAccepted
         ));
+    }
+
+    #[test]
+    fn dcap_policy_accepts_gcp_labeled_measurements() {
+        // Policy files written before GCP was distinguished from bare metal
+        // label GCP hosts `dcap-tdx`, so those records must still accept a
+        // peer reporting `gcp-tdx`
+        let policy = MeasurementPolicy::single_attestation_type(AttestationType::DcapTdx);
+        let measurements = mock_dcap_measurements();
+        let gcp_metadata = PlatformMetadata {
+            attestation_type: attest_types::AttestationType::GcpTdx,
+            ram_bytes: 0,
+            num_disks: 0,
+            acpi: None,
+        };
+
+        policy.check_measurement(&measurements, Some(&gcp_metadata)).unwrap();
     }
 
     #[test]
