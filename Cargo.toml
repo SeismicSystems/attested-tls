@@ -22,9 +22,9 @@ unused_async = "warn"
 [workspace.dependencies]
 attestation = { path = "crates/attestation" }
 mock-tdx = { path = "crates/mock-tdx" }
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23.37", default-features = false, features = ["brotli"] }
 tokio = { version = "1.50.0", features = ["default"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
-dcap-qvl = { git = "https://github.com/Phala-Network/dcap-qvl.git", rev = "f1dcc65371e941a7b83e3234833d23a1fb232ab1" }
+dcap-qvl = "0.5.2"
 pccs = { path = "crates/pccs" }

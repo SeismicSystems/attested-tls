@@ -1,3 +1,4 @@
+//! GCP provenance check
 use std::{
     collections::HashMap,
     io::Read,
@@ -76,8 +77,8 @@ impl GcpProvenanceChecker {
                 .known_gcp_ppids
                 .read()
                 .map_err(|err| GcpProvenanceError::CacheLock(err.to_string()))?;
-            if let Some(stored_at) = known_gcp_ppids.get(&ppid)
-                && is_cache_entry_fresh(*stored_at, now)
+            if let Some(stored_at) = known_gcp_ppids.get(&ppid) &&
+                is_cache_entry_fresh(*stored_at, now)
             {
                 return Ok(());
             }
@@ -99,7 +100,7 @@ impl GcpProvenanceChecker {
         }
 
         let provenance_url =
-            format!("{}/{}", registry_url.trim_end_matches('/'), hex::encode(&ppid));
+            format!("{}/{}", registry_url.trim_end_matches('/'), hex::encode(ppid));
         let document = fetch_provenance_document(&provenance_url)?;
         validate_provenance_document(&document)?;
 
@@ -117,6 +118,7 @@ fn is_cache_entry_fresh(stored_at: Instant, now: Instant) -> bool {
     now.checked_duration_since(stored_at).is_some_and(|age| age <= GCP_PROVENANCE_CACHE_TTL)
 }
 
+/// Given a TDX quote, extract the PPID from PCK certificate
 fn extract_ppid_from_quote(quote: &Quote) -> Result<[u8; GCP_PPID_BYTES], GcpProvenanceError> {
     let cert_chain = intel::extract_cert_chain(quote)
         .map_err(|err| GcpProvenanceError::PpidExtraction(err.to_string()))?;
@@ -167,6 +169,7 @@ fn fetch_provenance_document(url: &str) -> Result<String, GcpProvenanceError> {
     Ok(document)
 }
 
+/// Basic checks that the response looks like a provenance document
 fn validate_provenance_document(document: &str) -> Result<(), GcpProvenanceError> {
     let value: Value = serde_json::from_str(document)?;
     let object = value.as_object().ok_or(GcpProvenanceError::InvalidDocument)?;
@@ -259,7 +262,7 @@ mod tests {
 
     #[test]
     fn extracts_ppid_from_fixture_dcap_quote() {
-        let attestation = include_bytes!("../test-assets/dcap-tdx-1766059550570652607");
+        let attestation = include_bytes!("../../test-assets/dcap-tdx-1766059550570652607");
         let quote = Quote::parse(attestation).unwrap();
         let ppid = extract_ppid_from_quote(&quote).unwrap();
 
