@@ -8,7 +8,7 @@ use attest_measure::dcap::DcapFirmware;
 use thiserror::Error;
 
 /// Maps MRTD values to GCP firmware to avoid re-fetching on subsequent
-/// verification.
+/// verification
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GcpFirmwareCache {
     cache: Arc<RwLock<HashMap<[u8; 48], DcapFirmware>>>,
@@ -19,7 +19,7 @@ impl GcpFirmwareCache {
         Self { cache: Default::default() }
     }
 
-    /// Retrieve firmware from cache or fetch it from Google if absent.
+    /// Retrieve firmware from cache or fetch if not present
     pub(crate) fn get_or_fetch(
         &self,
         mrtd: [u8; 48],
@@ -39,8 +39,8 @@ impl GcpFirmwareCache {
     }
 }
 
-/// Fetch firmware from Google, offloading the blocking request when
-/// possible.
+/// Fetch firmware from Google. If we are running inside a mutli-threaded
+/// tokio runtime the blocking HTTP fetch is wrapped in `spawn_blocking`
 pub(crate) fn fetch_firmware(mrtd: [u8; 48]) -> Result<DcapFirmware, GcpFirmwareCacheError> {
     match tokio::runtime::Handle::try_current() {
         Ok(handle)
@@ -77,15 +77,15 @@ mod tests {
 
     use super::GcpFirmwareCache;
     use crate::{
-        AttestationType,
-        PlatformMetadata,
+        AttestationType, PlatformMetadata,
         dcap::{get_quote_input_data, verify_dcap_attestation_with_given_timestamp},
         measurements::{ExpectedMeasurements, MeasurementPolicy, MeasurementRecord},
     };
 
-    /// Timestamp used with test fixture.
+    /// Timestamp used with test fixture
     const GCP_TDX_PORTABLE_FIXTURE_TIMESTAMP: u64 = 1_782_809_233;
 
+    /// Create a firmware cache with given firmware loaded
     fn create_cache_with_firmware(firmware: DcapFirmware) -> GcpFirmwareCache {
         let cache = GcpFirmwareCache::new();
         cache.cache.write().unwrap().insert(firmware.mrtd, firmware);
@@ -116,6 +116,7 @@ mod tests {
         }
     }
 
+    /// Platform metadata associated with test fixture
     fn gcp_portable_platform_metadata() -> PlatformMetadata {
         PlatformMetadata {
             attestation_type: attest_types::AttestationType::GcpTdx,
@@ -136,7 +137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gcp_tdx_portable_policy_with_stored_collateral() {
+    async fn test_gcp_tdx_portable_policy_with_stored_collateral() {
         let attestation_bytes: &'static [u8] =
             include_bytes!("../../test-assets/gcp-tdx-1782809233226668671");
         let collateral_bytes: &'static [u8] =
