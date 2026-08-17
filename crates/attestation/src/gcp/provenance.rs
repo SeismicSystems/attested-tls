@@ -72,29 +72,23 @@ impl GcpProvenanceChecker {
         now: Instant,
     ) -> Result<(), GcpProvenanceError> {
         let ppid = extract_ppid_from_quote(quote)?;
-        {
+        let stale_entry = {
             let known_gcp_ppids = self
                 .known_gcp_ppids
                 .read()
                 .map_err(|err| GcpProvenanceError::CacheLock(err.to_string()))?;
-            if let Some(stored_at) = known_gcp_ppids.get(&ppid) &&
-                is_cache_entry_fresh(*stored_at, now)
-            {
-                return Ok(());
+            match known_gcp_ppids.get(&ppid).copied() {
+                Some(stored_at) if is_cache_entry_fresh(stored_at, now) => return Ok(()),
+                stale_entry => stale_entry,
             }
-        }
+        };
 
-        // Re-check under the write lock in case another thread refreshed the
-        // entry while we were waiting, and drop stale entries so we refetch.
-        {
+        if let Some(stale_entry) = stale_entry {
             let mut known_gcp_ppids = self
                 .known_gcp_ppids
                 .write()
                 .map_err(|err| GcpProvenanceError::CacheLock(err.to_string()))?;
-            if let Some(stored_at) = known_gcp_ppids.get(&ppid) {
-                if is_cache_entry_fresh(*stored_at, now) {
-                    return Ok(());
-                }
+            if known_gcp_ppids.get(&ppid) == Some(&stale_entry) {
                 known_gcp_ppids.remove(&ppid);
             }
         }
@@ -115,7 +109,7 @@ impl GcpProvenanceChecker {
 }
 
 fn is_cache_entry_fresh(stored_at: Instant, now: Instant) -> bool {
-    now.checked_duration_since(stored_at).is_some_and(|age| age <= GCP_PROVENANCE_CACHE_TTL)
+    now.saturating_duration_since(stored_at) <= GCP_PROVENANCE_CACHE_TTL
 }
 
 /// Given a TDX quote, extract the PPID from PCK certificate
