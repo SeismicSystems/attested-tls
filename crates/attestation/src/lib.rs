@@ -494,15 +494,13 @@ impl AttestationVerifier {
                     .attestation_evidence
                     .as_ref()
                     .ok_or(AttestationError::AttestationTypeNotAccepted)?;
-                let measurements = dcap::verify_dcap_attestation(
+                let (measurements, quote) = dcap::verify_dcap_attestation(
                     attestation_evidence.quote.clone(),
                     expected_input_data,
                     self.internal_pccs.clone(),
                 )
                 .await?;
                 if attestation_type == AttestationType::GcpTdx {
-                    let quote = dcap_qvl::quote::Quote::parse(&attestation_evidence.quote)
-                        .map_err(DcapVerificationError::from)?;
                     self.gcp_provenance_checker.verify_provenance(quote).await?;
                 }
                 measurements
@@ -578,14 +576,12 @@ impl AttestationVerifier {
                 #[cfg(not(any(test, feature = "mock")))]
                 let pccs = self.internal_pccs.clone().ok_or(AttestationError::NoPccs)?;
 
-                let measurements = dcap::verify_dcap_attestation_sync(
+                let (measurements, quote) = dcap::verify_dcap_attestation_sync(
                     attestation_evidence.quote.clone(),
                     expected_input_data,
                     pccs,
                 )?;
                 if attestation_type == AttestationType::GcpTdx {
-                    let quote = dcap_qvl::quote::Quote::parse(&attestation_evidence.quote)
-                        .map_err(DcapVerificationError::from)?;
                     self.gcp_provenance_checker.verify_provenance_sync(&quote)?;
                 }
                 measurements
@@ -787,7 +783,7 @@ mod tests {
         let quote = dcap::create_dcap_attestation(input_data).unwrap();
         let attestation_evidence = AttestationEvidence {
             quote,
-            platform: mock_platform_metadata(AttestationType::GcpTdx).unwrap(),
+            platform: mock_platform_metadata(AttestationType::DcapTdx).unwrap(),
         };
 
         let mock_pcs_server = spawn_mock_pcs_server(MockPcsConfig::default()).await.unwrap();
