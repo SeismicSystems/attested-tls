@@ -49,14 +49,14 @@ pub(crate) fn fetch_firmware(mrtd: [u8; 48]) -> Result<DcapFirmware, GcpFirmware
         {
             tokio::task::block_in_place(|| {
                 handle.block_on(async move {
-                    tokio::task::spawn_blocking(move || DcapFirmware::from_google(mrtd))
+                    tokio::task::spawn_blocking(move || DcapFirmware::from_google(mrtd, None))
                         .await
                         .map_err(|err| GcpFirmwareCacheError::Join(err.to_string()))?
                         .map_err(GcpFirmwareCacheError::from)
                 })
             })
         }
-        _ => DcapFirmware::from_google(mrtd).map_err(GcpFirmwareCacheError::from),
+        _ => DcapFirmware::from_google(mrtd, None).map_err(GcpFirmwareCacheError::from),
     }
 }
 
