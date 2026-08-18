@@ -41,22 +41,45 @@ impl GcpProvenanceChecker {
     /// Given a DCAP TDX quote, check if the associated PPID has a
     /// 'provenance document' from GCP
     ///
-    /// If a tokio runtime is available the blocking fetch is offloaded to
-    /// its blocking pool; otherwise it runs inline on the current thread.
+    /// If a tokio runtime is available the blocking check is offloaded to
+    /// its blocking pool; otherwise it runs inline on the current thread
     pub(crate) async fn verify_provenance(&self, quote: Quote) -> Result<(), GcpProvenanceError> {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let checker = self.clone();
-            handle
-                .spawn_blocking(move || checker.verify_provenance_sync(&quote))
-                .await
-                .map_err(|err| GcpProvenanceError::TaskJoin(err.to_string()))?
-        } else {
-            self.verify_provenance_sync(&quote)
+        self.verify_provenance_with_registry_url(quote, GCP_PROVENANCE_REGISTRY_URL.to_string())
+            .await
+    }
+
+    async fn verify_provenance_with_registry_url(
+        &self,
+        quote: Quote,
+        registry_url: String,
+    ) -> Result<(), GcpProvenanceError> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let checker = self.clone();
+                handle
+                    .spawn_blocking(move || {
+                        checker.verify_provenance_with_registry_url_blocking_at(
+                            &quote,
+                            &registry_url,
+                            Instant::now(),
+                        )
+                    })
+                    .await
+                    .map_err(|err| GcpProvenanceError::TaskJoin(err.to_string()))?
+            }
+            Err(_) => self.verify_provenance_with_registry_url_blocking_at(
+                &quote,
+                &registry_url,
+                Instant::now(),
+            ),
         }
     }
 
     /// Given a DCAP TDX quote, check if the associated PPID has a
     /// 'provenance document' from GCP
+    ///
+    /// On a multi-threaded tokio runtime, mark the check as blocking so the
+    /// runtime can keep scheduling other tasks on another worker
     pub(crate) fn verify_provenance_sync(&self, quote: &Quote) -> Result<(), GcpProvenanceError> {
         self.verify_provenance_with_registry_url_sync_at(
             quote,
@@ -66,6 +89,28 @@ impl GcpProvenanceChecker {
     }
 
     fn verify_provenance_with_registry_url_sync_at(
+        &self,
+        quote: &Quote,
+        registry_url: &str,
+        now: Instant,
+    ) -> Result<(), GcpProvenanceError> {
+        let verify =
+            || self.verify_provenance_with_registry_url_blocking_at(quote, registry_url, now);
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle)
+                if matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::MultiThread
+                ) =>
+            {
+                tokio::task::block_in_place(verify)
+            }
+            _ => verify(),
+        }
+    }
+
+    fn verify_provenance_with_registry_url_blocking_at(
         &self,
         quote: &Quote,
         registry_url: &str,
@@ -211,6 +256,7 @@ mod tests {
     use std::{
         io::{Read as _, Write as _},
         net::SocketAddr,
+        sync::mpsc,
         thread,
         time::{Duration, Instant},
     };
@@ -245,6 +291,33 @@ mod tests {
         (addr, handle)
     }
 
+    fn spawn_blocked_test_registry_server(
+        body: impl Into<String>,
+    ) -> (SocketAddr, mpsc::Receiver<()>, mpsc::Sender<()>, thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.into();
+        let (request_started_tx, request_started_rx) = mpsc::channel();
+        let (send_response_tx, send_response_rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let bytes_read = stream.read(&mut buf).unwrap();
+            let request = String::from_utf8_lossy(&buf[..bytes_read]).to_string();
+            request_started_tx.send(()).unwrap();
+            send_response_rx.recv().unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        });
+
+        (addr, request_started_rx, send_response_tx, handle)
+    }
+
     #[test]
     fn extracts_ppid_from_mock_tdx_quote() {
         let attestation = dcap::create_dcap_attestation([0u8; 64]).unwrap();
@@ -266,6 +339,51 @@ mod tests {
 
     #[test]
     fn provenance_check_fetches_registry_document_for_ppid() {
+        let attestation = dcap::create_dcap_attestation([0u8; 64]).unwrap();
+        let quote = Quote::parse(&attestation).unwrap();
+        let (addr, request_handle) = spawn_test_registry_server(
+            200,
+            r#"{"zone":"projects/test/zones/us-central1-a","timestamp":"2026-06-11T00:00:00Z"}"#,
+        );
+
+        GcpProvenanceChecker::new()
+            .verify_provenance_with_registry_url_sync_at(
+                &quote,
+                &format!("http://{addr}"),
+                Instant::now(),
+            )
+            .unwrap();
+
+        let request = request_handle.join().unwrap();
+        assert!(request.starts_with(&format!("GET /{MOCK_PPID_HEX} HTTP/1.1")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_provenance_check_remains_cancellable() {
+        let attestation = dcap::create_dcap_attestation([0u8; 64]).unwrap();
+        let quote = Quote::parse(&attestation).unwrap();
+        let (addr, request_started, send_response, request_handle) =
+            spawn_blocked_test_registry_server(
+                r#"{"zone":"projects/test/zones/us-central1-a","timestamp":"2026-06-11T00:00:00Z"}"#,
+            );
+        let checker = GcpProvenanceChecker::new();
+
+        let task = tokio::spawn(async move {
+            checker.verify_provenance_with_registry_url(quote, format!("http://{addr}")).await
+        });
+        request_started.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        task.abort();
+        let join_result = tokio::time::timeout(Duration::from_secs(1), task).await;
+        send_response.send(()).unwrap();
+        request_handle.join().unwrap();
+
+        let join_error = join_result.expect("aborted verification remained blocked").unwrap_err();
+        assert!(join_error.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_provenance_check_runs_from_tokio_worker() {
         let attestation = dcap::create_dcap_attestation([0u8; 64]).unwrap();
         let quote = Quote::parse(&attestation).unwrap();
         let (addr, request_handle) = spawn_test_registry_server(
