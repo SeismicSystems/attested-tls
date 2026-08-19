@@ -1,6 +1,9 @@
 //! CVM attestation generation and verification
 
-#[cfg(feature = "azure")]
+// `azure-verifier` is the base Azure feature: it gates the whole module,
+// and `azure-attester` (which implies it) additionally enables the
+// generation code inside.
+#[cfg(feature = "azure-verifier")]
 pub mod azure;
 pub mod dcap;
 mod gcp;
@@ -66,11 +69,11 @@ impl AttestationExchangeMessage {
         match self.attestation_type() {
             AttestationType::None => Ok(None),
             AttestationType::AzureTdx => {
-                #[cfg(feature = "azure")]
+                #[cfg(feature = "azure-verifier")]
                 {
                     Ok(Some(azure::get_measurements(&attestation_evidence.quote)?))
                 }
-                #[cfg(not(feature = "azure"))]
+                #[cfg(not(feature = "azure-verifier"))]
                 {
                     Err(AttestationError::AttestationTypeNotSupported)
                 }
@@ -159,7 +162,7 @@ impl AttestationType {
     /// Detect what platform we are on by attempting an attestation
     pub fn detect() -> Result<Self, AttestationError> {
         // First attempt azure, if the feature is present
-        #[cfg(feature = "azure")]
+        #[cfg(feature = "azure-attester")]
         {
             if azure::detect_azure_cvm()? {
                 return Ok(AttestationType::AzureTdx);
@@ -270,7 +273,7 @@ impl AttestationGenerator {
             match self.attestation_type {
                 AttestationType::None => Ok(AttestationExchangeMessage::without_attestation()),
                 AttestationType::AzureTdx => {
-                    #[cfg(feature = "azure")]
+                    #[cfg(feature = "azure-attester")]
                     {
                         let platform = attest_measure::platform::metadata_for(
                             self.attestation_type.try_into()?,
@@ -282,10 +285,10 @@ impl AttestationGenerator {
                             }),
                         })
                     }
-                    #[cfg(not(feature = "azure"))]
+                    #[cfg(not(feature = "azure-attester"))]
                     {
                         tracing::error!(
-                            "Attempted to generate an azure attestation but the `azure` feature not enabled"
+                            "Attempted to generate an azure attestation but the `azure-attester` feature not enabled"
                         );
                         Err(AttestationError::AttestationTypeNotSupported)
                     }
@@ -479,7 +482,7 @@ impl AttestationVerifier {
                 }
             }
             AttestationType::AzureTdx => {
-                #[cfg(feature = "azure")]
+                #[cfg(feature = "azure-verifier")]
                 {
                     let attestation_evidence = attestation_exchange_message
                         .attestation_evidence
@@ -493,7 +496,7 @@ impl AttestationVerifier {
                     )
                     .await?
                 }
-                #[cfg(not(feature = "azure"))]
+                #[cfg(not(feature = "azure-verifier"))]
                 {
                     return Err(AttestationError::AttestationTypeNotSupported);
                 }
@@ -555,7 +558,7 @@ impl AttestationVerifier {
                 }
             }
             AttestationType::AzureTdx => {
-                #[cfg(feature = "azure")]
+                #[cfg(feature = "azure-verifier")]
                 {
                     let attestation_evidence = attestation_exchange_message
                         .attestation_evidence
@@ -569,7 +572,7 @@ impl AttestationVerifier {
                         self.override_azure_outdated_tcb,
                     )?
                 }
-                #[cfg(not(feature = "azure"))]
+                #[cfg(not(feature = "azure-verifier"))]
                 {
                     return Err(AttestationError::AttestationTypeNotSupported);
                 }
@@ -744,8 +747,8 @@ pub enum AttestationError {
     AttestationTypeNotAccepted,
     #[error("Measurements not accepted")]
     MeasurementsNotAccepted,
-    #[cfg(feature = "azure")]
-    #[error("MAA: {0}")]
+    #[cfg(feature = "azure-verifier")]
+    #[error("Microsoft Azure Attestation (MAA): {0}")]
     Maa(#[from] azure::MaaError),
     #[error("If using a an attestation provider an attestation type must be given")]
     AttestationTypeNotGiven,

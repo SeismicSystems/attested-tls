@@ -23,26 +23,34 @@ Tokio-backed background tasks such as PCCS pre-warm and cache refresh.
 
 ## Feature flags
 
-### `azure`
+### `azure-attester`
 
-Enables Microsoft Azure vTPM attestation support (generation and verification),
-through `tss-esapi`.
+Enables generation of Microsoft Azure vTPM attestation evidence on Azure TDX
+CVMs, through `tss-esapi`. Implies `azure-verifier`, giving full Azure
+attestation support.
+
+This feature requires [tpm2](https://tpm2-software.github.io) and `openssl` to
+be installed. On Debian-based systems tpm2 is provided by
+[`libtss2-dev`](https://packages.debian.org/trixie/libtss2-dev), and on nix
+`tpm2-tss`. This dependency is currently not packaged for MacOS, meaning
+currently it is not possible to compile or run with the `azure-attester`
+feature on MacOS.
 
 **Note:** Azure support is currently **not actively maintained** as we do not
 have production CVMs deployed on Azure and so are unlikely to notice when this
 implementation of Azure attestation generation or verification ceases to work.
 Use at your own risk.
 
-This feature requires [tpm2](https://tpm2-software.github.io) and `openssl` to
-be installed. On Debian-based systems tpm2 is provided by
-[`libtss2-dev`](https://packages.debian.org/trixie/libtss2-dev), and on nix
-`tpm2-tss`. This dependency is currently not packaged for MacOS, meaning
-currently it is not possible to compile or run with the `azure` feature on
-MacOS.
-
-This feature is disabled by default. Note that without this feature,
+All Azure features are disabled by default. Without `azure-verifier`,
 verification of azure attestations is not possible and azure attestations will
 be rejected with an error.
+
+### `azure-verifier`
+
+Enables verification of Microsoft Azure vTPM attestation evidence.
+Verification is pure computation over the evidence bytes; it requires
+`openssl` but no TPM stack, and builds and runs on any platform, including
+MacOS.
 
 *** Note ***
 
