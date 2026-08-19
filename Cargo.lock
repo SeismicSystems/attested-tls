@@ -386,6 +386,7 @@ dependencies = [
  "anyhow",
  "attest-measure",
  "attest-types",
+ "az-cvm-vtpm",
  "az-tdx-vtpm",
  "base64 0.22.1",
  "dcap-qvl 0.5.2",
