@@ -20,6 +20,7 @@ use super::{
     unix_time_now_secs,
 };
 use crate::{
+    VerifiedAttestation,
     dcap::{
         verify_dcap_attestation_with_given_timestamp,
         verify_dcap_attestation_with_timestamp_sync,
@@ -43,7 +44,7 @@ pub async fn verify_azure_attestation(
     expected_input_data: [u8; 64],
     pccs: Option<Pccs>,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, MaaError> {
+) -> Result<VerifiedAttestation, MaaError> {
     let now = unix_time_now_secs()?;
 
     verify_azure_attestation_with_given_timestamp(
@@ -67,7 +68,7 @@ pub fn verify_azure_attestation_sync(
     expected_input_data: [u8; 64],
     pccs: Pccs,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, MaaError> {
+) -> Result<VerifiedAttestation, MaaError> {
     let now = unix_time_now_secs()?;
 
     verify_azure_attestation_with_given_timestamp_sync(
@@ -90,7 +91,7 @@ async fn verify_azure_attestation_with_given_timestamp(
     collateral: Option<QuoteCollateralV3>,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, MaaError> {
+) -> Result<VerifiedAttestation, MaaError> {
     let PreparedAzureAttestation {
         tdx_quote_bytes,
         hcl_report,
@@ -99,23 +100,25 @@ async fn verify_azure_attestation_with_given_timestamp(
         tpm_attestation,
     } = prepare_azure_attestation(input)?;
 
-    let _dcap_measurements = verify_dcap_attestation_with_given_timestamp(
-        tdx_quote_bytes,
-        expected_tdx_input_data,
-        pccs,
-        collateral,
-        now,
-        override_azure_outdated_tcb,
-    )
-    .await?;
+    let VerifiedAttestation { quote, dcap_collateral, verified_at, .. } =
+        verify_dcap_attestation_with_given_timestamp(
+            tdx_quote_bytes,
+            expected_tdx_input_data,
+            pccs,
+            collateral,
+            now,
+            override_azure_outdated_tcb,
+        )
+        .await?;
 
-    finish_azure_attestation_verification(
+    let measurements = finish_azure_attestation_verification(
         hcl_report,
         var_data_hash,
         tpm_attestation,
         expected_input_data,
         now,
-    )
+    )?;
+    Ok(VerifiedAttestation { measurements, quote, dcap_collateral, verified_at })
 }
 
 /// Synchronous version of the verifier
@@ -126,7 +129,7 @@ fn verify_azure_attestation_with_given_timestamp_sync(
     collateral: Option<QuoteCollateralV3>,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, MaaError> {
+) -> Result<VerifiedAttestation, MaaError> {
     let PreparedAzureAttestation {
         tdx_quote_bytes,
         hcl_report,
@@ -135,22 +138,24 @@ fn verify_azure_attestation_with_given_timestamp_sync(
         tpm_attestation,
     } = prepare_azure_attestation(input)?;
 
-    let _dcap_measurements = verify_dcap_attestation_with_timestamp_sync(
-        tdx_quote_bytes,
-        expected_tdx_input_data,
-        pccs,
-        collateral,
-        now,
-        override_azure_outdated_tcb,
-    )?;
+    let VerifiedAttestation { quote, dcap_collateral, verified_at, .. } =
+        verify_dcap_attestation_with_timestamp_sync(
+            tdx_quote_bytes,
+            expected_tdx_input_data,
+            pccs,
+            collateral,
+            now,
+            override_azure_outdated_tcb,
+        )?;
 
-    finish_azure_attestation_verification(
+    let measurements = finish_azure_attestation_verification(
         hcl_report,
         var_data_hash,
         tpm_attestation,
         expected_input_data,
         now,
-    )
+    )?;
+    Ok(VerifiedAttestation { measurements, quote, dcap_collateral, verified_at })
 }
 
 /// Parses the attestation during verification
@@ -339,6 +344,8 @@ impl RsaPubKey {
 
 #[cfg(test)]
 mod tests {
+    use dcap_qvl::QuoteCollateralV3;
+
     use super::{super::MAX_AZURE_ATTESTATION_PAYLOAD_SIZE, *};
 
     fn input_data_from_attestation(attestation_bytes: &[u8]) -> [u8; 64] {
@@ -454,31 +461,43 @@ mod tests {
         assert_eq!(attestation_document.tpm_attestation.ak_intermediate_certificates_pem.len(), 2);
 
         let attestation_json = serde_json::to_vec(&attestation_document).unwrap();
-        let async_collateral = serde_saphyr::from_slice(collateral_bytes).unwrap();
-        let sync_collateral = serde_saphyr::from_slice(collateral_bytes).unwrap();
+        let fixture_collateral: QuoteCollateralV3 =
+            serde_saphyr::from_slice(collateral_bytes).unwrap();
 
-        let async_measurements = verify_azure_attestation_with_given_timestamp(
+        let VerifiedAttestation {
+            measurements: async_measurements,
+            dcap_collateral: async_collateral,
+            ..
+        } = verify_azure_attestation_with_given_timestamp(
             attestation_json.clone(),
             [0; 64],
             None,
-            Some(async_collateral),
+            Some(fixture_collateral.clone()),
             now,
             false,
         )
         .await
         .unwrap();
 
-        let sync_measurements = verify_azure_attestation_with_given_timestamp_sync(
+        let VerifiedAttestation {
+            measurements: sync_measurements,
+            dcap_collateral: sync_collateral,
+            ..
+        } = verify_azure_attestation_with_given_timestamp_sync(
             attestation_json,
             [0; 64],
             Pccs::new_without_prewarm(None),
-            Some(sync_collateral),
+            Some(fixture_collateral.clone()),
             now,
             false,
         )
         .unwrap();
 
         assert_eq!(async_measurements, sync_measurements);
+        // The bundle handed back is the one the verification consumed, which
+        // is what makes archiving it provenance rather than a second copy
+        assert_eq!(async_collateral, fixture_collateral);
+        assert_eq!(sync_collateral, fixture_collateral);
     }
 
     #[tokio::test]
