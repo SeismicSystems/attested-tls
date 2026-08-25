@@ -20,9 +20,9 @@ use std::{
 
 use attest_measure::platform::PlatformError;
 pub use attest_types::{AttestationEvidence, PlatformMetadata};
-/// The DCAP collateral a verification consumed, reported as
-/// [VerifiedAttestation::dcap_collateral]. Re-exported so callers can
-/// archive it without taking a direct dependency on `dcap-qvl`
+/// The DCAP collateral a verification consumed, reported inside
+/// [AttestationResult::collateral]. Re-exported so callers can archive
+/// it without taking a direct dependency on `dcap-qvl`
 pub use dcap_qvl::QuoteCollateralV3;
 use dcap_qvl::quote::Quote;
 use measurements::MultiMeasurements;
@@ -357,6 +357,26 @@ pub enum PccsMode {
     Lazy,
 }
 
+/// A DCAP collateral bundle together with the instant it is evaluated at
+///
+/// Every part of the bundle expires: TCB Info, QE Identity and both CRLs
+/// carry `nextUpdate`, and the issuer chains carry `notAfter`. A bundle
+/// therefore answers a freshness question only with respect to some
+/// instant, and the two are one value rather than two. Holding them
+/// together is what makes a verification reproducible: the same evidence,
+/// the same bundle and the same instant give the same answer forever.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollateralSnapshot {
+    /// The collateral the verification consumed. A second copy fetched
+    /// alongside may differ, since a collateral cache can refresh between
+    /// the two fetches
+    pub collateral: QuoteCollateralV3,
+    /// Seconds since the Unix epoch. Gates every freshness check:
+    /// certificate validity windows, the CRLs, and the TCB Info and QE
+    /// Identity windows
+    pub at: u64,
+}
+
 /// The outcome of verifying one piece of attestation evidence
 ///
 /// Every attested platform here rests on a DCAP quote: a GCP TDX quote is
@@ -364,23 +384,22 @@ pub enum PccsMode {
 /// verification always consumes exactly one collateral bundle, whichever
 /// platform produced the evidence.
 #[derive(Clone, Debug)]
-pub struct VerifiedAttestation {
+pub struct AttestationResult {
     /// The measurements the evidence carries
-    pub measurements: MultiMeasurements,
-    /// The parsed DCAP quote the measurements were read from
-    pub quote: Quote,
-    /// The DCAP collateral the verification consumed — the bundle to
-    /// archive next to the evidence it verified. A second copy fetched
-    /// alongside may differ, since a collateral cache can refresh between
-    /// the two fetches
-    pub dcap_collateral: QuoteCollateralV3,
-    /// The instant every freshness check was evaluated at, as seconds since
-    /// the Unix epoch
     ///
-    /// With the collateral, this is what makes a verification reproducible:
-    /// the same evidence, the same bundle and this instant give the same
-    /// answer forever.
-    pub verified_at: u64,
+    /// Read out of `quote` on the DCAP and GCP paths. On Azure they are
+    /// the vTPM PCRs, which measure the guest boot rather than the launched
+    /// TD. They chain to `quote` - its report data commits to the HCL var
+    /// data, which carries the AK public key that signs the vTPM quote -
+    /// but are no field of it, so `quote` alone does not yield them
+    pub measurements: MultiMeasurements,
+    /// The parsed DCAP quote the verification rests on. On Azure this is
+    /// the TD quote the evidence wraps, not the vTPM quote
+    pub quote: Quote,
+    /// What the verification consumed, and when it was held to — the pair
+    /// to archive next to the evidence it verified, and to hand back to
+    /// re-verify that evidence later
+    pub collateral: CollateralSnapshot,
 }
 
 /// Allows remote attestations to be verified
@@ -542,7 +561,7 @@ impl AttestationVerifier {
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
         expected_input_data: [u8; 64],
-    ) -> Result<Option<VerifiedAttestation>, AttestationError> {
+    ) -> Result<Option<AttestationResult>, AttestationError> {
         let attestation_type = attestation_exchange_message.attestation_type();
         tracing::debug!("Verifying {attestation_type} attestation");
 
@@ -618,7 +637,7 @@ impl AttestationVerifier {
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
         expected_input_data: [u8; 64],
-    ) -> Result<Option<VerifiedAttestation>, AttestationError> {
+    ) -> Result<Option<AttestationResult>, AttestationError> {
         let attestation_type = attestation_exchange_message.attestation_type();
         tracing::debug!("Verifying {attestation_type} attestation");
 
@@ -937,6 +956,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(verified.dcap_collateral, served);
+        assert_eq!(verified.collateral.collateral, served);
     }
 }
