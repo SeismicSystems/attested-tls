@@ -77,9 +77,11 @@ mod tests {
 
     use super::GcpFirmwareCache;
     use crate::{
+        EndorsementSnapshot,
         PlatformMetadata,
         VerifiedAttestation,
-        dcap::{get_quote_input_data, verify_dcap_attestation_with_given_timestamp},
+        VerifyMode,
+        dcap::{get_quote_input_data, verify_dcap_attestation},
         measurements::{ExpectedMeasurements, MeasurementPolicy, MeasurementRecord},
     };
 
@@ -156,17 +158,17 @@ mod tests {
 
         let collateral = serde_saphyr::from_slice(collateral_bytes).unwrap();
         let firmware = serde_saphyr::from_slice(firmware_bytes).unwrap();
-        let (VerifiedAttestation { measurements, .. }, _) =
-            verify_dcap_attestation_with_given_timestamp(
-                attestation_bytes.to_vec(),
-                expected_input_data,
-                None,
-                Some(collateral),
+        let (VerifiedAttestation { measurements, .. }, _) = verify_dcap_attestation(
+            attestation_bytes.to_vec(),
+            expected_input_data,
+            VerifyMode::Archived(EndorsementSnapshot::dcap(
+                collateral,
                 GCP_TDX_PORTABLE_FIXTURE_TIMESTAMP,
-                false,
-            )
-            .await
-            .unwrap();
+            )),
+            None,
+        )
+        .await
+        .unwrap();
 
         let measurement_policy = MeasurementPolicy {
             accepted_measurements: vec![MeasurementRecord {
