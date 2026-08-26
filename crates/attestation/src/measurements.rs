@@ -320,21 +320,13 @@ pub struct MeasurementRecord {
     /// An identifier, for example the name and version of the corresponding
     /// OS image
     pub measurement_id: String,
-    /// The attestation platform this record accepts
+    /// The attestation type this record accepts
     pub attestation_type: AttestationType,
     /// The expected measurement register values
     pub measurements: ExpectedMeasurements,
 }
 
 impl MeasurementRecord {
-    fn accepts_attestation_type(&self, actual: AttestationType) -> bool {
-        self.attestation_type == actual ||
-            matches!(
-                (self.attestation_type, actual),
-                (AttestationType::DcapTdx, AttestationType::GcpTdx)
-            )
-    }
-
     pub fn allow_no_attestation() -> Self {
         Self {
             measurement_id: "Allow no attestation".to_string(),
@@ -457,7 +449,7 @@ impl MeasurementPolicy {
         };
 
         if self.accepted_measurements.iter().any(|measurement_record| match measurements {
-            _ if !measurement_record.accepts_attestation_type(actual_attestation_type) => false,
+            _ if !measurement_record.attestation_type.accepts(actual_attestation_type) => false,
             MultiMeasurements::Dcap(dcap_measurements) => match &measurement_record.measurements {
                 ExpectedMeasurements::Dcap(expected) => {
                     // All measurements in our policy must be given and must match
@@ -997,6 +989,41 @@ mod tests {
                 .unwrap_err(),
             AttestationError::MeasurementsNotAccepted
         ));
+    }
+
+    #[test]
+    fn gcp_policy_rejects_dcap_labeled_measurements() {
+        let policy = MeasurementPolicy::single_attestation_type(AttestationType::GcpTdx);
+        let measurements = mock_dcap_measurements();
+        let gcp_metadata = PlatformMetadata {
+            attestation_type: attest_types::AttestationType::GcpTdx,
+            ram_bytes: 0,
+            num_disks: 0,
+            acpi: None,
+        };
+
+        policy.check_measurement(&measurements, Some(&gcp_metadata)).unwrap();
+        assert!(matches!(
+            policy.check_measurement(&measurements, None).unwrap_err(),
+            AttestationError::MeasurementsNotAccepted
+        ));
+    }
+
+    #[test]
+    fn dcap_policy_accepts_gcp_labeled_measurements() {
+        // Policy files written before GCP was distinguished from bare metal
+        // label GCP hosts `dcap-tdx`, so those records must still accept a
+        // peer reporting `gcp-tdx`
+        let policy = MeasurementPolicy::single_attestation_type(AttestationType::DcapTdx);
+        let measurements = mock_dcap_measurements();
+        let gcp_metadata = PlatformMetadata {
+            attestation_type: attest_types::AttestationType::GcpTdx,
+            ram_bytes: 0,
+            num_disks: 0,
+            acpi: None,
+        };
+
+        policy.check_measurement(&measurements, Some(&gcp_metadata)).unwrap();
     }
 
     #[test]
