@@ -19,11 +19,13 @@ jobs:
 
     - name: Set up stable Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
 
-    - name: Set up nightly Rust for clippy/fmt
+    - name: Set up nightly Rust for formatting
       uses: dtolnay/rust-toolchain@nightly
       with:
-        components: rustfmt, clippy
+        components: rustfmt
 
     - name: Cache dependencies
       uses: actions/cache@v3
@@ -39,8 +41,8 @@ jobs:
     - name: Check formatting using nightly
       run: cargo +nightly fmt --all -- --check
 
-    - name: Run cargo clippy using nightly
-      run: cargo +nightly clippy --workspace --features azure-attester -- -D warnings
+    - name: Run cargo clippy using stable
+      run: cargo +stable clippy --workspace --features azure-attester -- -D warnings
 
     - name: Run cargo test
       run: cargo test --workspace --features azure-attester --all-targets
