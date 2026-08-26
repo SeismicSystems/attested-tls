@@ -1,7 +1,10 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use attestation::{
-    AttestationGenerator, AttestationType, AttestationVerifier, measurements::MeasurementPolicy,
+    AttestationGenerator,
+    AttestationType,
+    AttestationVerifier,
+    measurements::MeasurementPolicy,
 };
 use attestation_provider_server::{attestation_provider_client, attestation_provider_server};
 use clap::{Parser, Subcommand};

@@ -341,7 +341,8 @@ impl AttestationGenerator {
 /// How the verifier obtains DCAP collateral
 #[derive(Clone, Debug)]
 pub enum PccsMode {
-    /// No internal collateral cache. Collateral is always fetched from remote source.
+    /// No internal collateral cache. Collateral is always fetched from
+    /// remote source.
     None,
     /// Internal cache pre-filled with all available collateral at build
     /// time.
@@ -700,8 +701,8 @@ fn running_on_gcp() -> Result<bool, AttestationError> {
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {
-        return Ok(r.status() == 200
-            && r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
+        return Ok(r.status() == 200 &&
+            r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
     }
 
     Ok(false)
