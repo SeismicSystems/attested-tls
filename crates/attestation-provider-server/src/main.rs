@@ -1,10 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use attestation::{
-    AttestationGenerator,
-    AttestationType,
-    AttestationVerifier,
-    measurements::MeasurementPolicy,
+    AttestationGenerator, AttestationType, AttestationVerifier, measurements::MeasurementPolicy,
 };
 use attestation_provider_server::{attestation_provider_client, attestation_provider_server};
 use clap::{Parser, Subcommand};
@@ -97,13 +94,9 @@ async fn main() -> anyhow::Result<()> {
                 None => MeasurementPolicy::accept_anything(),
             };
 
-            let mut attestation_verifier_builder = AttestationVerifier::builder(measurement_policy);
-
-            if cli.log_dcap_quote {
-                attestation_verifier_builder = attestation_verifier_builder.dump_dcap_quotes();
-            }
-
-            let attestation_verifier = attestation_verifier_builder.build();
+            let attestation_verifier = AttestationVerifier::builder(measurement_policy)
+                .with_dump_dcap_quotes(cli.log_dcap_quote)
+                .build();
 
             let attestation_message =
                 attestation_provider_client(server_addr, attestation_verifier).await?;

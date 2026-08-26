@@ -338,6 +338,18 @@ impl AttestationGenerator {
     }
 }
 
+/// How the verifier obtains DCAP collateral
+#[derive(Clone, Debug)]
+pub enum PccsMode {
+    /// No internal collateral cache. Collateral is always fetched from remote source.
+    None,
+    /// Internal cache pre-filled with all available collateral at build
+    /// time.
+    Prewarmed,
+    /// Internal cache that starts empty and fetches on demand.
+    Lazy,
+}
+
 /// Allows remote attestations to be verified
 #[derive(Clone, Debug)]
 pub struct AttestationVerifier {
@@ -362,22 +374,36 @@ pub struct AttestationVerifier {
 pub struct AttestationVerifierBuilder {
     /// The measurement policy with accepted values and attestation types
     measurement_policy: MeasurementPolicy,
+    /// Internal PCCS setting
+    pccs_mode: PccsMode,
     /// A PCCS service to use - defaults to Intel PCS
     pccs_url: Option<String>,
     dump_dcap_quotes: bool,
     /// Whether to override outdated TCB when on Azure
     override_azure_outdated_tcb: bool,
-    internal_pccs_prewarm: Option<bool>,
 }
 
 impl AttestationVerifierBuilder {
     pub fn build(self) -> AttestationVerifier {
-        AttestationVerifier::build(self)
+        let internal_pccs = match self.pccs_mode {
+            PccsMode::None => None,
+            PccsMode::Prewarmed => Some(Pccs::new(self.pccs_url)),
+            PccsMode::Lazy => Some(Pccs::new_without_prewarm(self.pccs_url)),
+        };
+
+        AttestationVerifier {
+            measurement_policy: self.measurement_policy,
+            dump_dcap_quotes: self.dump_dcap_quotes,
+            override_azure_outdated_tcb: self.override_azure_outdated_tcb,
+            internal_pccs,
+            known_gcp_firmware: GcpFirmwareCache::new(),
+            gcp_provenance_checker: GcpProvenanceChecker::new(),
+        }
     }
 
     /// Whether to write quotes to files on disk
-    pub fn dump_dcap_quotes(mut self) -> Self {
-        self.dump_dcap_quotes = true;
+    pub fn with_dump_dcap_quotes(mut self, dump_dcap_quotes: bool) -> Self {
+        self.dump_dcap_quotes = dump_dcap_quotes;
         self
     }
 
@@ -386,64 +412,31 @@ impl AttestationVerifierBuilder {
     /// This provides a workaround for a known outdated FMSPC used by Azure
     /// When `azure-verifier` is disabled, this option has no effect because
     /// Azure attestations are not supported.
-    pub fn override_azure_outdated_tcb(mut self) -> Self {
-        self.override_azure_outdated_tcb = true;
+    pub fn with_override_azure_outdated_tcb(mut self, override_azure_outdated_tcb: bool) -> Self {
+        self.override_azure_outdated_tcb = override_azure_outdated_tcb;
         self
     }
 
-    /// Do not keep an internal DCAP collateral cache
-    pub fn with_no_internal_pccs(mut self) -> Self {
-        self.internal_pccs_prewarm = None;
-        self
-    }
-
-    /// Keep a DCAP collateral cache, and pre-fill it with all available
-    /// collateral
-    pub fn with_pccs_prewarmed(mut self) -> Self {
-        self.internal_pccs_prewarm = Some(true);
-        self
-    }
-
-    /// Keep a DCAP collateral cache, starting empty
-    pub fn with_pccs_not_prewarmed(mut self) -> Self {
-        self.internal_pccs_prewarm = Some(false);
+    pub fn with_pccs_mode(mut self, pccs_mode: PccsMode) -> Self {
+        self.pccs_mode = pccs_mode;
         self
     }
 
     /// Set the URL used by internal PCCS
-    pub fn pccs_url(mut self, pccs_url: String) -> Self {
+    pub fn with_pccs_url(mut self, pccs_url: String) -> Self {
         self.pccs_url = Some(pccs_url);
         self
     }
 }
 
 impl AttestationVerifier {
-    fn build(builder: AttestationVerifierBuilder) -> Self {
-        let internal_pccs = builder.internal_pccs_prewarm.map(|with_prewarm| {
-            if with_prewarm {
-                Pccs::new(builder.pccs_url)
-            } else {
-                Pccs::new_without_prewarm(builder.pccs_url)
-            }
-        });
-
-        Self {
-            measurement_policy: builder.measurement_policy,
-            dump_dcap_quotes: builder.dump_dcap_quotes,
-            override_azure_outdated_tcb: builder.override_azure_outdated_tcb,
-            internal_pccs,
-            known_gcp_firmware: GcpFirmwareCache::new(),
-            gcp_provenance_checker: GcpProvenanceChecker::new(),
-        }
-    }
-
     pub fn builder(measurement_policy: MeasurementPolicy) -> AttestationVerifierBuilder {
         AttestationVerifierBuilder {
             measurement_policy,
+            pccs_mode: PccsMode::None,
             pccs_url: None,
             dump_dcap_quotes: false,
             override_azure_outdated_tcb: false,
-            internal_pccs_prewarm: Some(true),
         }
     }
 
@@ -707,8 +700,8 @@ fn running_on_gcp() -> Result<bool, AttestationError> {
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {
-        return Ok(r.status() == 200 &&
-            r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
+        return Ok(r.status() == 200
+            && r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
     }
 
     Ok(false)
