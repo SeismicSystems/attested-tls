@@ -866,6 +866,8 @@ mod tests {
             ram_bytes: 0,
             num_disks: 0,
             acpi: None,
+            dm_verity_boot: false,
+            smbios_handoff: None,
         }
     }
 
@@ -1000,6 +1002,8 @@ mod tests {
             ram_bytes: 0,
             num_disks: 0,
             acpi: None,
+            dm_verity_boot: false,
+            smbios_handoff: None,
         };
 
         policy.check_measurement(&measurements, Some(&gcp_metadata)).unwrap();
@@ -1021,6 +1025,8 @@ mod tests {
             ram_bytes: 0,
             num_disks: 0,
             acpi: None,
+            dm_verity_boot: false,
+            smbios_handoff: None,
         };
 
         policy.check_measurement(&measurements, Some(&gcp_metadata)).unwrap();
@@ -1063,6 +1069,8 @@ mod tests {
             ram_bytes: 4 * 1024 * 1024 * 1024,
             num_disks: 1,
             acpi: Some(AcpiHashes { loader: [0x11; 48], rsdp: [0x22; 48], tables: [0x33; 48] }),
+            dm_verity_boot: false,
+            smbios_handoff: None,
         };
         let firmware = gcp_firmware_fixture();
         let expected_measurements =
@@ -1094,6 +1102,8 @@ mod tests {
             ram_bytes: 0,
             num_disks: 0,
             acpi: None,
+            dm_verity_boot: false,
+            smbios_handoff: None,
         };
         let expected = expected_dcap_registers(&image_hashes, &platform_metadata, None).unwrap();
         let policy = MeasurementPolicy {

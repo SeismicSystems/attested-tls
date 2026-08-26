@@ -721,6 +721,8 @@ pub fn mock_platform_metadata(
         ram_bytes: 0,
         num_disks: 0,
         acpi: None,
+        dm_verity_boot: false,
+        smbios_handoff: None,
     })
 }
 

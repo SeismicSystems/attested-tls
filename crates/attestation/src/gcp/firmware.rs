@@ -134,6 +134,8 @@ mod tests {
                     "0bb0afa008873bdc20dee0f741da7896c2bfeee94ae52e9bdbf94bc87c32d04a4b1f1d824490f1dae574ff6d4e4bb0b3",
                 ),
             }),
+            dm_verity_boot: false,
+            smbios_handoff: None,
         }
     }
 
