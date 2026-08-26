@@ -262,7 +262,7 @@ The `measurements` format above specifies register values, so any change
 to platform-injected values (firmware, RAM size, disk count, ACPI tables)
 changes the expected register values even when the OS image is unchanged.
 
-The `dcap_image_hashes` alternative allows you to specify the OS image's 
+The `dcap_image_hashes` alternative allows you to specify the OS image's
 boot-component hashes instead, and the verifier reconstructs the expected
 register values from those hashes plus platform metadata available at
 attestation verification time. The same policy record then matches the same OS
@@ -304,9 +304,12 @@ Example:
 Portable policies work with the `"dcap-tdx"` and `"gcp-tdx"` attestation types.
 `"dcap-tdx"` accepts DCAP evidence from any platform, including GCP and
 bare-metal TDX, while `"gcp-tdx"` restricts the record to GCP. For bare-metal
-DCAP TDX, the verifier reconstructs and checks the image-dependent RTMR1 and
-RTMR2 registers. For GCP, it additionally fetches the platform firmware blob
-from Google's metadata service (keyed by MRTD) and reconstructs MRTD and RTMR0.
+DCAP TDX, MRTD selects a bundled trusted OVMF firmware blob. The verifier uses
+that blob and the platform metadata to reconstruct and check MRTD and RTMR0, in
+addition to the image-dependent RTMR1 and RTMR2. An unknown bare-metal MRTD is
+rejected. The accepted firmware assets and their provenance are documented in
+[`assets/ovmf`](assets/ovmf/README.md). For GCP, the verifier instead fetches a
+Google-endorsed platform firmware blob keyed by MRTD.
 
 The JSON object emitted directly by `attest measure portable` is also accepted
 as a measurement policy. Its optional `azure` PCR values and its `dcap` image

@@ -20,6 +20,7 @@ use crate::{
     AttestationType,
     dcap::DcapVerificationError,
     gcp::{GcpFirmwareCache, fetch_firmware},
+    trusted_firmware::firmware_for_mrtd,
 };
 
 /// Represents the measurement register types in a TDX quote
@@ -740,8 +741,8 @@ pub(crate) fn compare_portable_dcap_measurement(
         return false;
     };
 
-    // GCP firmware is needed to reconstruct MRTD and RTMR0. For self-hosted
-    // TDX, a portable image policy reconstructs and checks RTMR1 and RTMR2.
+    // Trusted firmware is needed to reconstruct MRTD and RTMR0. GCP firmware
+    // is fetched with a signed endorsement; self-hosted firmware is bundled.
     let firmware = match platform_metadata.attestation_type {
         ImageAttestationType::GcpTdx => {
             let mrtd = dcap_measurements.get(&DcapMeasurementRegister::MRTD);
@@ -761,7 +762,19 @@ pub(crate) fn compare_portable_dcap_measurement(
                 }
             }
         }
-        ImageAttestationType::SelfHostedTdx => None,
+        ImageAttestationType::SelfHostedTdx => {
+            let mrtd = *dcap_measurements.get(&DcapMeasurementRegister::MRTD);
+            match firmware_for_mrtd(mrtd) {
+                Some(firmware) => Some(firmware),
+                None => {
+                    warn!(
+                        "Could not match image hash measurement - self-hosted MRTD {} is not trusted",
+                        hex::encode(mrtd)
+                    );
+                    return false;
+                }
+            }
+        }
         ImageAttestationType::AzureTdx => {
             warn!(
                 "Attempting to match portable measurement policy with Azure TDX - not yet supported"
@@ -855,6 +868,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
+    use crate::trusted_firmware::any_trusted_firmware;
 
     fn test_dcap_measurements(mrtd: [u8; 48], rtmr0: [u8; 48]) -> MultiMeasurements {
         MultiMeasurements::Dcap(DcapMeasurements::new(mrtd, rtmr0, [0u8; 48], [0u8; 48], [0u8; 48]))
@@ -1099,13 +1113,15 @@ mod tests {
         };
         let platform_metadata = PlatformMetadata {
             attestation_type: ImageAttestationType::SelfHostedTdx,
-            ram_bytes: 0,
+            ram_bytes: 4 * 1024 * 1024 * 1024,
             num_disks: 0,
-            acpi: None,
+            acpi: Some(AcpiHashes { loader: [0x77; 48], rsdp: [0x88; 48], tables: [0x99; 48] }),
             dm_verity_boot: false,
             smbios_handoff: None,
         };
-        let expected = expected_dcap_registers(&image_hashes, &platform_metadata, None).unwrap();
+        let firmware = any_trusted_firmware();
+        let expected =
+            expected_dcap_registers(&image_hashes, &platform_metadata, Some(&firmware)).unwrap();
         let policy = MeasurementPolicy {
             accepted_measurements: vec![MeasurementRecord {
                 measurement_id: "bare-metal-image-hash-policy".to_string(),
@@ -1114,8 +1130,8 @@ mod tests {
             }],
         };
         let measurements = MultiMeasurements::Dcap(DcapMeasurements::new(
-            [0xaa; 48],
-            [0xbb; 48],
+            expected.mrtd.unwrap(),
+            expected.rtmr0.unwrap(),
             expected.rtmr1,
             expected.rtmr2,
             [0xcc; 48],
@@ -1142,6 +1158,16 @@ mod tests {
         };
         assert!(matches!(
             gcp_policy.check_measurement(&measurements, Some(&platform_metadata)),
+            Err(AttestationError::MeasurementsNotAccepted)
+        ));
+
+        let mut unknown_firmware = measurements.clone();
+        let MultiMeasurements::Dcap(dcap) = &mut unknown_firmware else {
+            unreachable!();
+        };
+        dcap.mrtd = [0xaa; 48];
+        assert!(matches!(
+            policy.check_measurement(&unknown_firmware, Some(&platform_metadata)),
             Err(AttestationError::MeasurementsNotAccepted)
         ));
 

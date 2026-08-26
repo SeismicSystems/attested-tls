@@ -8,6 +8,7 @@ pub mod azure;
 pub mod dcap;
 mod gcp;
 pub mod measurements;
+mod trusted_firmware;
 #[cfg(test)]
 use std::sync::OnceLock;
 use std::{
