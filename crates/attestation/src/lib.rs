@@ -361,7 +361,6 @@ pub struct AttestationVerifier {
     /// Whether to override outdated TCB when on Azure
     ///
     /// This provides a workaround for a known outdated FMSPC used by Azure
-    #[cfg_attr(not(feature = "azure-verifier"), allow(dead_code))]
     override_azure_outdated_tcb: bool,
     /// Internal cache for collateral
     internal_pccs: Option<Pccs>,
