@@ -1742,7 +1742,7 @@ mod tests {
         let dynamic_verifier = AttestationVerifier::builder(
             attestation::measurements::MeasurementPolicy::expect_none(),
         )
-        .with_no_internal_pccs()
+        .with_pccs_mode(attestation::PccsMode::None)
         .with_dynamic_measurements_file_or_url("measurements.json".into())
         .build();
 
