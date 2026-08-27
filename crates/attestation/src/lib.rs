@@ -338,61 +338,107 @@ impl AttestationGenerator {
     }
 }
 
+/// How the verifier obtains DCAP collateral
+#[derive(Clone, Debug)]
+pub enum PccsMode {
+    /// No internal collateral cache. Collateral is always fetched from
+    /// remote source.
+    None,
+    /// Internal cache pre-filled with all available collateral at build
+    /// time.
+    Prewarmed,
+    /// Internal cache that starts empty and fetches on demand.
+    Lazy,
+}
+
 /// Allows remote attestations to be verified
 #[derive(Clone, Debug)]
 pub struct AttestationVerifier {
     /// The measurement policy with accepted values and attestation types
-    pub measurement_policy: MeasurementPolicy,
-    /// If this is empty, anything will be accepted - but measurements are
-    /// always injected into HTTP headers, so that they can be verified
-    /// upstream A PCCS service to use - defaults to Intel PCS
-    pub pccs_url: Option<String>,
+    measurement_policy: MeasurementPolicy,
     /// Whether to write quotes to files on disk
-    pub dump_dcap_quotes: bool,
+    dump_dcap_quotes: bool,
     /// Whether to override outdated TCB when on Azure
     ///
     /// This provides a workaround for a known outdated FMSPC used by Azure
-    pub override_azure_outdated_tcb: bool,
+    #[cfg_attr(not(feature = "azure-verifier"), allow(dead_code))]
+    override_azure_outdated_tcb: bool,
     /// Internal cache for collateral
-    pub internal_pccs: Option<Pccs>,
+    internal_pccs: Option<Pccs>,
     /// Cached GCP firmware blobs indexed by MRTD
     known_gcp_firmware: GcpFirmwareCache,
     /// Cached PPIDs that have a valid GCP host-registry document
     gcp_provenance_checker: GcpProvenanceChecker,
 }
 
-impl AttestationVerifier {
-    fn build(
-        measurement_policy: MeasurementPolicy,
-        pccs_url: Option<String>,
-        dump_dcap_quotes: bool,
-        override_azure_outdated_tcb: bool,
-        known_gcp_firmware: GcpFirmwareCache,
-    ) -> Self {
-        Self {
-            measurement_policy,
-            pccs_url: pccs_url.clone(),
-            dump_dcap_quotes,
-            override_azure_outdated_tcb,
-            internal_pccs: Some(Pccs::new(pccs_url)),
-            known_gcp_firmware,
+/// Options used to construct an [AttestationVerifier]
+pub struct AttestationVerifierBuilder {
+    /// The measurement policy with accepted values and attestation types
+    measurement_policy: MeasurementPolicy,
+    /// Internal PCCS setting
+    pccs_mode: PccsMode,
+    /// A PCCS service to use - defaults to Intel PCS
+    pccs_url: Option<String>,
+    dump_dcap_quotes: bool,
+    /// Whether to override outdated TCB when on Azure
+    override_azure_outdated_tcb: bool,
+}
+
+impl AttestationVerifierBuilder {
+    pub fn build(self) -> AttestationVerifier {
+        let internal_pccs = match self.pccs_mode {
+            PccsMode::None => None,
+            PccsMode::Prewarmed => Some(Pccs::new(self.pccs_url)),
+            PccsMode::Lazy => Some(Pccs::new_without_prewarm(self.pccs_url)),
+        };
+
+        AttestationVerifier {
+            measurement_policy: self.measurement_policy,
+            dump_dcap_quotes: self.dump_dcap_quotes,
+            override_azure_outdated_tcb: self.override_azure_outdated_tcb,
+            internal_pccs,
+            known_gcp_firmware: GcpFirmwareCache::new(),
             gcp_provenance_checker: GcpProvenanceChecker::new(),
         }
     }
 
-    pub fn new(
-        measurement_policy: MeasurementPolicy,
-        pccs_url: Option<String>,
-        dump_dcap_quotes: bool,
-        override_azure_outdated_tcb: bool,
-    ) -> Self {
-        Self::build(
+    /// Whether to write quotes to files on disk
+    pub fn with_dump_dcap_quotes(mut self, dump_dcap_quotes: bool) -> Self {
+        self.dump_dcap_quotes = dump_dcap_quotes;
+        self
+    }
+
+    /// Whether to override outdated TCB when on Azure
+    ///
+    /// This provides a workaround for a known outdated FMSPC used by Azure
+    /// When `azure-verifier` is disabled, this option has no effect because
+    /// Azure attestations are not supported.
+    pub fn with_override_azure_outdated_tcb(mut self, override_azure_outdated_tcb: bool) -> Self {
+        self.override_azure_outdated_tcb = override_azure_outdated_tcb;
+        self
+    }
+
+    pub fn with_pccs_mode(mut self, pccs_mode: PccsMode) -> Self {
+        self.pccs_mode = pccs_mode;
+        self
+    }
+
+    /// Set the URL used by internal PCCS
+    pub fn with_pccs_url(mut self, pccs_url: String) -> Self {
+        self.pccs_url = Some(pccs_url);
+        self
+    }
+}
+
+impl AttestationVerifier {
+    pub fn builder(measurement_policy: MeasurementPolicy) -> AttestationVerifierBuilder {
+        AttestationVerifierBuilder {
             measurement_policy,
-            pccs_url,
-            dump_dcap_quotes,
-            override_azure_outdated_tcb,
-            gcp::GcpFirmwareCache::new(),
-        )
+            pccs_mode: PccsMode::None,
+            pccs_url: None,
+            dump_dcap_quotes: false,
+            override_azure_outdated_tcb: false,
+        }
     }
 
     /// Create an [AttestationVerifier] which will only allow no attestation
@@ -400,7 +446,6 @@ impl AttestationVerifier {
     pub fn expect_none() -> Self {
         Self {
             measurement_policy: MeasurementPolicy::expect_none(),
-            pccs_url: None,
             dump_dcap_quotes: false,
             override_azure_outdated_tcb: false,
             internal_pccs: None,
@@ -414,7 +459,6 @@ impl AttestationVerifier {
     pub fn mock() -> Self {
         Self {
             measurement_policy: MeasurementPolicy::mock(),
-            pccs_url: None,
             dump_dcap_quotes: false,
             override_azure_outdated_tcb: false,
             internal_pccs: None,
@@ -428,7 +472,6 @@ impl AttestationVerifier {
     pub fn mock_with_pccs(pccs_url: String) -> Self {
         Self {
             measurement_policy: MeasurementPolicy::mock(),
-            pccs_url: None,
             dump_dcap_quotes: false,
             override_azure_outdated_tcb: false,
             internal_pccs: Some(Pccs::new(Some(pccs_url))),
@@ -618,6 +661,11 @@ impl AttestationVerifier {
     /// Whether we allow no remote attestation
     pub fn has_remote_attestation(&self) -> bool {
         self.measurement_policy.has_remote_attestation()
+    }
+
+    /// Returns the measurement policy used
+    pub fn measurement_policy(&self) -> &MeasurementPolicy {
+        &self.measurement_policy
     }
 }
 

@@ -254,7 +254,7 @@ pub enum GcpProvenanceError {
 #[cfg(test)]
 mod tests {
     use std::{
-        io::{Read as _, Write as _},
+        io::Write as _,
         net::SocketAddr,
         sync::mpsc,
         thread,
