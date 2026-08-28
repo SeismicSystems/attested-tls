@@ -8,6 +8,7 @@ pub mod azure;
 pub mod dcap;
 mod gcp;
 pub mod measurements;
+mod trusted_firmware;
 #[cfg(test)]
 use std::sync::OnceLock;
 use std::{
@@ -769,6 +770,8 @@ pub fn mock_platform_metadata(
         ram_bytes: 0,
         num_disks: 0,
         acpi: None,
+        dm_verity_boot: false,
+        smbios_handoff: None,
     })
 }
 

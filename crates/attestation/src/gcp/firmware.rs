@@ -77,7 +77,6 @@ mod tests {
 
     use super::GcpFirmwareCache;
     use crate::{
-        AttestationType,
         PlatformMetadata,
         dcap::{get_quote_input_data, verify_dcap_attestation_with_given_timestamp},
         measurements::{ExpectedMeasurements, MeasurementPolicy, MeasurementRecord},
@@ -114,6 +113,7 @@ mod tests {
             gpt_disk_guid_hash: decode_dcap_hash(
                 "488fa3f08aae01c1a46b497319e8a7d3b7335c9ff4f4d7fe6a3dd62c844b03de22157c0303be58f10e3152687778e68d",
             ),
+            pe_sections: None,
         }
     }
 
@@ -134,6 +134,8 @@ mod tests {
                     "0bb0afa008873bdc20dee0f741da7896c2bfeee94ae52e9bdbf94bc87c32d04a4b1f1d824490f1dae574ff6d4e4bb0b3",
                 ),
             }),
+            dm_verity_boot: false,
+            smbios_handoff: None,
         }
     }
 
@@ -167,7 +169,8 @@ mod tests {
         let measurement_policy = MeasurementPolicy {
             accepted_measurements: vec![MeasurementRecord {
                 measurement_id: "gcp-tdx-portable-image-hashes".to_string(),
-                attestation_type: AttestationType::GcpTdx,
+                // The generic DCAP policy type accepts GCP DCAP evidence.
+                attestation_type: crate::AttestationType::DcapTdx,
                 measurements: ExpectedMeasurements::Image(gcp_portable_image_hashes()),
             }],
         };
