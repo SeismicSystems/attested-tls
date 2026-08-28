@@ -400,6 +400,21 @@ mod tests {
         let parsed = TpmsAttest::parse(&message).unwrap();
         assert_eq!(parsed.extra_data(), attest.extra_data().as_slice());
         assert_eq!(parsed.pcr_digest(), info.pcr_digest().as_slice());
+
+        // The selection decides which register each PCR value is attributed
+        // to, so it is cross-checked as well. `PcrSlot` is a bit flag, so a
+        // register's number is the position of its one bit. Sorted, because
+        // agreement on the set is the claim being tested; our own ascending
+        // order is pinned by the tests in `tpms_attest`.
+        let mut tss_registers: Vec<u32> = info
+            .pcr_selection()
+            .get_selections()
+            .iter()
+            .flat_map(|selection| selection.selected())
+            .map(|slot| (slot as u32).trailing_zeros())
+            .collect();
+        tss_registers.sort_unstable();
+        assert_eq!(parsed.selected_pcrs(), tss_registers.as_slice());
     }
 
     #[test]

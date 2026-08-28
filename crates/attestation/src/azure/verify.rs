@@ -223,9 +223,7 @@ fn finish_azure_attestation_verification(
     let vtpm_quote = tpm_attestation.quote;
     let hcl_ak_pub_der = hcl_ak_pub.key.try_to_der().map_err(|_| MaaError::JwkConversion)?;
     let pub_key = PKey::public_key_from_der(&hcl_ak_pub_der)?;
-    vtpm_quote.verify(&pub_key, &expected_input_data[..32])?;
-
-    let pcrs = vtpm_quote.pcrs_sha256();
+    let pcrs = vtpm_quote.verify(&pub_key, &expected_input_data[..32])?;
 
     // Parse AK certificate
     let (_type_label, ak_certificate_der) =
@@ -257,7 +255,7 @@ fn finish_azure_attestation_verification(
         now,
     )?;
 
-    Ok(MultiMeasurements::from_pcrs(pcrs))
+    Ok(MultiMeasurements::from_indexed_pcrs(pcrs))
 }
 
 /// Extract the measurements from the attestation, but do not verify
@@ -268,8 +266,8 @@ pub fn get_measurements(input: &[u8]) -> Result<MultiMeasurements, MaaError> {
 
     let attestation_document: AttestationDocument = serde_json::from_slice(input)?;
     let vtpm_quote = attestation_document.tpm_attestation.quote;
-    let pcrs = vtpm_quote.pcrs_sha256();
-    Ok(MultiMeasurements::from_pcrs(pcrs))
+    let pcrs = vtpm_quote.indexed_pcrs_unverified()?;
+    Ok(MultiMeasurements::from_indexed_pcrs(pcrs))
 }
 
 /// JSON Web Key used in [HclRuntimeClaims]

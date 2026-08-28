@@ -164,6 +164,15 @@ impl fmt::Debug for DcapMeasurements {
 #[derive(Clone, PartialEq)]
 pub enum MultiMeasurements {
     Dcap(DcapMeasurements),
+    /// Azure vTPM PCR values, keyed by the register each one measures.
+    ///
+    /// The keys are the registers the quote attested, named by its
+    /// `pcrSelect` bitmap. That is any subset the sending party chose, so a
+    /// register absent from the map was not attested. Azure's own attester
+    /// selects all 24 of a vTPM's registers, but nothing here requires it.
+    ///
+    /// Values are SHA-256 digests, the only PCR bank a quote may select
+    /// here.
     Azure(HashMap<u32, [u8; 32]>),
     NoAttestation,
 }
@@ -217,6 +226,16 @@ impl fmt::Debug for AzureHexDebug<'_> {
 pub enum ExpectedMeasurements {
     Image(DcapImageHashes),
     Dcap(HashMap<DcapMeasurementRegister, Vec<[u8; 48]>>),
+    /// Accepted Azure vTPM PCR values, keyed by PCR register.
+    ///
+    /// These are the registers the policy constrains, not the registers a
+    /// quote carries. Keys come from the policy's field names, spelled
+    /// either `"4"` or `"pcr4"`, which [`parse_azure_pcr_index`] rejects
+    /// above 23. Each register maps to every value that satisfies it, so
+    /// one policy can accept several images.
+    ///
+    /// A register absent from the map is unconstrained. A register present
+    /// here but absent from the evidence rejects that evidence.
     Azure(HashMap<u32, Vec<[u8; 32]>>),
     NoAttestation,
 }
@@ -298,8 +317,15 @@ impl MultiMeasurements {
         )))
     }
 
-    pub fn from_pcrs<'a>(pcrs: impl Iterator<Item = &'a [u8; 32]>) -> Self {
-        Self::Azure(pcrs.copied().enumerate().map(|(index, value)| (index as u32, value)).collect())
+    /// Azure measurements from PCR values already paired with the registers
+    /// they measure.
+    ///
+    /// The pairing belongs to the quote — its `pcrSelect` bitmap says which
+    /// registers it attests — so it arrives here rather than being inferred
+    /// from list position. `pcrN` in a measurement policy names register N,
+    /// and nothing else may decide that.
+    pub fn from_indexed_pcrs(pcrs: impl IntoIterator<Item = (u32, [u8; 32])>) -> Self {
+        Self::Azure(pcrs.into_iter().collect())
     }
 }
 
