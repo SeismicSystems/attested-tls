@@ -438,16 +438,13 @@ impl MeasurementPolicy {
         platform_metadata: Option<&PlatformMetadata>,
         known_gcp_firmware: Option<&GcpFirmwareCache>,
     ) -> Result<(), AttestationError> {
-        let actual_attestation_type = match measurements {
-            MultiMeasurements::NoAttestation => Some(AttestationType::None),
-            MultiMeasurements::Dcap(_) | MultiMeasurements::Azure(_) => {
-                platform_metadata.map(|metadata| metadata.attestation_type.into())
-            }
-        };
-
-        let Some(actual_attestation_type) = actual_attestation_type else {
-            return Err(AttestationError::MeasurementsNotAccepted);
-        };
+        let actual_attestation_type = platform_metadata
+            .map(|metadata| metadata.attestation_type.into())
+            .unwrap_or_else(|| match measurements {
+                MultiMeasurements::Dcap(_) => AttestationType::DcapTdx,
+                MultiMeasurements::Azure(_) => AttestationType::AzureTdx,
+                MultiMeasurements::NoAttestation => AttestationType::None,
+            });
 
         if self.accepted_measurements.iter().any(|measurement_record| match measurements {
             _ if !measurement_record.attestation_type.accepts(actual_attestation_type) => false,
@@ -994,9 +991,7 @@ mod tests {
         let allowed_attestation_type =
             MeasurementPolicy::from_file("test-assets/measurements_2.json".into()).await.unwrap();
 
-        allowed_attestation_type
-            .check_measurement(&mock_dcap_measurements(), Some(&self_hosted_platform_metadata()))
-            .unwrap();
+        allowed_attestation_type.check_measurement(&mock_dcap_measurements(), None).unwrap();
 
         // Will not match another attestation type
         assert!(matches!(
@@ -1005,6 +1000,15 @@ mod tests {
                 .unwrap_err(),
             AttestationError::MeasurementsNotAccepted
         ));
+    }
+
+    #[test]
+    fn register_policies_infer_attestation_type_without_platform_metadata() {
+        let dcap_policy = MeasurementPolicy::single_attestation_type(AttestationType::DcapTdx);
+        dcap_policy.check_measurement(&mock_dcap_measurements(), None).unwrap();
+
+        let azure_policy = MeasurementPolicy::single_attestation_type(AttestationType::AzureTdx);
+        azure_policy.check_measurement(&MultiMeasurements::Azure(HashMap::new()), None).unwrap();
     }
 
     #[test]
