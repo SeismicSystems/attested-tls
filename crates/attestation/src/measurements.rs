@@ -476,7 +476,8 @@ impl MeasurementPolicy {
             _ if !measurement_record.attestation_type.accepts(actual_attestation_type) => false,
             MultiMeasurements::Dcap(dcap_measurements) => match &measurement_record.measurements {
                 ExpectedMeasurements::Dcap(expected) => {
-                    // All measurements in our policy must be given and must match
+                    // All measurements in our policy must be given and must
+                    // match
                     for (k, v) in expected.iter() {
                         let actual_value = dcap_measurements.get(k);
                         if !v.iter().any(|v| actual_value == v) {
@@ -616,8 +617,8 @@ impl MeasurementPolicy {
 
         let json: serde_json::Value = serde_json::from_slice(&json_bytes)?;
 
-        // If a single object is given, we treat it as an array with a single
-        // element
+        // If a single object is given, we treat it as an array with a
+        // single element
         let records = match json {
             serde_json::Value::Array(records) => records,
             record => vec![record],
@@ -660,7 +661,8 @@ impl MeasurementPolicy {
                         });
                     }
                     MeasurementOutput::Dcap(_) => {
-                        // Not supported because only RTMR 1 and 2 are specified
+                        // Not supported because only RTMR 1 and 2 are
+                        // specified
                         return Err(MeasurementFormatError::UnsafeAttestMeasureDcapOutput);
                     }
                 }
@@ -764,8 +766,9 @@ pub(crate) fn compare_portable_dcap_measurement(
         return false;
     };
 
-    // Trusted firmware is needed to reconstruct MRTD and RTMR0. GCP firmware
-    // is fetched with a signed endorsement; self-hosted firmware is bundled.
+    // Trusted firmware is needed to reconstruct MRTD and RTMR0. GCP
+    // firmware is fetched with a signed endorsement; self-hosted
+    // firmware is bundled.
     let firmware = match platform_metadata.attestation_type {
         ImageAttestationType::GcpTdx => {
             let mrtd = dcap_measurements.get(&DcapMeasurementRegister::MRTD);

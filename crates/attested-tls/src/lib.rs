@@ -632,8 +632,8 @@ impl AttestedCertificateVerifier {
         now: UnixTime,
     ) -> Result<(), rustls::Error> {
         if cert.subject() != cert.issuer() {
-            // issuer != subject means it's not a self-signed cert, so we just return
-            // the error as-is
+            // issuer != subject means it's not a self-signed cert, so we
+            // just return the error as-is
             return Err(InvalidCertificate(CertificateError::UnknownIssuer));
         }
 
@@ -657,8 +657,8 @@ impl AttestedCertificateVerifier {
     ) -> Result<(), rustls::Error> {
         let (expected_input_data, expiry) = Self::cert_binding_data(cert)?;
 
-        // First check if we have already successfully verified the attestation
-        // associated with this certificate
+        // First check if we have already successfully verified the
+        // attestation associated with this certificate
         {
             let trusted_certs = self.trusted_certs.read().map_err(|_| {
                 rustls::Error::General("Trusted certificate cache lock poisoned".into())
@@ -799,14 +799,14 @@ impl ServerCertVerifier for AttestedCertificateVerifier {
 
 impl ClientCertVerifier for AttestedCertificateVerifier {
     fn offer_client_auth(&self) -> bool {
-        // client must send its cert so that server could verify the attestation
-        // from the extension
+        // client must send its cert so that server could verify the
+        // attestation from the extension
         true
     }
 
     fn client_auth_mandatory(&self) -> bool {
-        // client must send its cert so that server could verify the attestation
-        // from the extension
+        // client must send its cert so that server could verify the
+        // attestation from the extension
         true
     }
 

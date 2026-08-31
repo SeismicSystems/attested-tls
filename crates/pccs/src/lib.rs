@@ -621,7 +621,8 @@ async fn refresh_loop(
             refresh_sleep_seconds(entry.next_update, now) == 0
         };
         if !should_refresh {
-            // The cached schedule moved forward, so skip the redundant fetch.
+            // The cached schedule moved forward, so skip the redundant
+            // fetch.
             continue;
         }
 

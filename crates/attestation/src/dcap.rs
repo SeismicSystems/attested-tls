@@ -158,8 +158,8 @@ fn verify_dcap_attestation_with_collateral_and_timestamp(
 
     let fmspc = hex::encode_upper(quote_fmspc(&quote)?);
 
-    // Override outdated TCB only if we are on Azure and the FMSPC is known to
-    // be outdated
+    // Override outdated TCB only if we are on Azure and the FMSPC is known
+    // to be outdated
     let override_outdated_tcb = if override_azure_outdated_tcb {
         |mut tcb_info: TcbInfo| {
             // This is a workaround for a known outdated FMSPC used by azure
@@ -299,8 +299,8 @@ mod tests {
         let attestation_bytes: &'static [u8] =
             include_bytes!("../test-assets/dcap-tdx-1766059550570652607");
 
-        // To avoid this test stopping working when the certificate is no longer
-        // valid we pass in a timestamp
+        // To avoid this test stopping working when the certificate is no
+        // longer valid we pass in a timestamp
         let now = 1769509141;
 
         let measurements_json = br#"
@@ -365,14 +365,15 @@ mod tests {
             .unwrap();
     }
 
-    // This specifically tests a quote which has outdated TCB level from Azure
+    // This specifically tests a quote which has outdated TCB level from
+    // Azure
     #[tokio::test]
     async fn test_dcap_verify_azure_override() {
         let attestation_bytes: &'static [u8] =
             include_bytes!("../test-assets/azure_failed_dcap_quote_10.bin");
 
-        // To avoid this test stopping working when the certificate is no longer
-        // valid we pass in a timestamp
+        // To avoid this test stopping working when the certificate is no
+        // longer valid we pass in a timestamp
         let now = 1771414156;
 
         let collateral_bytes: &'static [u8] =

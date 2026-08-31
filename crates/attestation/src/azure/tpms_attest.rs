@@ -75,7 +75,8 @@ impl TpmsAttest {
         reader.read_tpm2b()?;
         // extraData: TPM2B_DATA
         let extra_data = reader.read_tpm2b()?.to_vec();
-        // clockInfo: TPMS_CLOCK_INFO (clock, resetCount, restartCount, safe)
+        // clockInfo: TPMS_CLOCK_INFO (clock, resetCount, restartCount,
+        // safe)
         reader.skip(8 + 4 + 4 + 1)?;
         // firmwareVersion: UINT64
         reader.skip(8)?;
@@ -84,9 +85,10 @@ impl TpmsAttest {
         let selection_count = reader.read_u32()?;
         // Exactly one bank, and it has to be SHA-256. The values a quote
         // carries alongside this structure are fixed-width `[u8; 32]`, so a
-        // second bank would have no room and a different algorithm would not
-        // fit at all. Refusing beats guessing: which value belongs to which
-        // register is what a measurement policy is compared against.
+        // second bank would have no room and a different algorithm would
+        // not fit at all. Refusing beats guessing: which value
+        // belongs to which register is what a measurement policy is
+        // compared against.
         if selection_count != 1 {
             return Err(AttestError::PcrSelectionBanks(selection_count));
         }
