@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -26,6 +28,16 @@ use tokio::{
 use tracing::debug;
 use x509_parser::{prelude::FromDer, revocation_list::CertificateRevocationList};
 
+#[cfg(test)]
+static TEST_CRYPTO_PROVIDER: OnceLock<()> = OnceLock::new();
+
+#[cfg(test)]
+fn install_test_crypto_provider() {
+    TEST_CRYPTO_PROVIDER.get_or_init(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
 /// For fetching collateral directly from Intel
 pub const PCS_URL: &str = "https://api.trustedservices.intel.com";
 /// How long before expiry to refresh collateral
@@ -41,6 +53,13 @@ const STARTUP_PREWARM_CONCURRENCY: usize = 8;
 type SharedCollateralClient = CollateralClient<DefaultConfig, SharedReqwestHttp>;
 
 /// PCCS collateral cache with proactive background refresh
+///
+/// Fetching runs over rustls-backed HTTP, so the application must install a
+/// process-level rustls [crypto provider] before collateral can be fetched,
+/// e.g. `rustls::crypto::aws_lc_rs::default_provider().install_default()`.
+/// Without one, fetches fail with [`PccsError::MissingCryptoProvider`].
+///
+/// [crypto provider]: https://github.com/rustls/rustls#cryptography-providers
 #[derive(Clone)]
 pub struct Pccs {
     /// The URL of the service used to fetch collateral (PCS / PCCS)
@@ -307,7 +326,11 @@ impl Pccs {
         let fmspcs = match self.fetch_fmspcs().await {
             Ok(fmspcs) => fmspcs,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to fetch FMSPC list for startup pre-provision");
+                tracing::warn!(
+                    error = %e,
+                    "Failed to fetch FMSPC list for startup pre-provision; continuing \
+                     without a warm cache — collateral is fetched on demand"
+                );
                 return PrewarmOutcome::Failed(format!(
                     "Failed to fetch FMSPC list for prewarm: {e}"
                 ));
@@ -396,6 +419,16 @@ impl Pccs {
 
     /// Fetches available FMSPC entries from configured PCCS/PCS endpoint
     async fn fetch_fmspcs(&self) -> Result<Vec<FmspcEntry>, PccsError> {
+        #[cfg(test)]
+        install_test_crypto_provider();
+
+        // Without a process-level crypto provider, building the reqwest
+        // client panics; error instead, so the pre-warm task logs a warning
+        // rather than dumping a panic backtrace.
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            return Err(PccsError::MissingCryptoProvider);
+        }
+
         let url = format!("{}/sgx/certification/v4/fmspcs", self.url);
         let response = self
             .http_client
@@ -636,7 +669,8 @@ async fn refresh_loop(
             refresh_sleep_seconds(entry.next_update, now) == 0
         };
         if !should_refresh {
-            // The cached schedule moved forward, so skip the redundant fetch.
+            // The cached schedule moved forward, so skip the redundant
+            // fetch.
             continue;
         }
 
@@ -751,6 +785,12 @@ pub enum PccsError {
     SystemTime(#[from] std::time::SystemTimeError),
     #[error("HTTP client: {0}")]
     Reqwest(#[from] reqwest::Error),
+    #[error(
+        "no process-level rustls crypto provider is installed; install one at application \
+         startup, e.g. `rustls::crypto::aws_lc_rs::default_provider().install_default()` — \
+         see https://github.com/rustls/rustls#cryptography-providers"
+    )]
+    MissingCryptoProvider,
     #[error("Failed to fetch FMSPC: {0}")]
     FmspcFetch(reqwest::StatusCode),
     #[error("JSON: {0}")]

@@ -19,11 +19,13 @@ jobs:
 
     - name: Set up stable Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
 
-    - name: Set up nightly Rust for clippy/fmt
+    - name: Set up nightly Rust for formatting
       uses: dtolnay/rust-toolchain@nightly
       with:
-        components: rustfmt, clippy
+        components: rustfmt
 
     - name: Cache dependencies
       uses: actions/cache@v3
@@ -39,8 +41,37 @@ jobs:
     - name: Check formatting using nightly
       run: cargo +nightly fmt --all -- --check
 
-    - name: Run cargo clippy using nightly
-      run: cargo +nightly clippy --workspace --features azure -- -D warnings
+    - name: Run cargo clippy using stable
+      run: cargo +stable clippy --workspace --features azure-attester -- -D warnings
 
     - name: Run cargo test
-      run: cargo test --workspace --features azure --all-targets
+      run: cargo test --workspace --features azure-attester --all-targets
+
+  azure_verifier_portability:
+    name: "CI: Azure verifier portability (macOS)"
+
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up stable Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check azure-verifier builds without the TPM stack
+      run: cargo check -p attestation --no-default-features --features azure-verifier
+
+    - name: Test azure-verifier
+      run: cargo test -p attestation --no-default-features --features azure-verifier

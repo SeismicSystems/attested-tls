@@ -34,7 +34,7 @@ pub async fn verify_dcap_attestation(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
     pccs: Option<Pccs>,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
     let override_azure_outdated_tcb = false;
     verify_dcap_attestation_with_given_timestamp(
@@ -59,7 +59,7 @@ pub fn verify_dcap_attestation_sync(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
     pccs: Pccs,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
     let override_azure_outdated_tcb = false;
     verify_dcap_attestation_with_timestamp_sync(
@@ -85,7 +85,7 @@ pub fn verify_dcap_attestation_with_timestamp_sync(
     collateral: Option<QuoteCollateralV3>,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     let quote = Quote::parse(&input)?;
 
     let ca = quote_ca(&quote)?.as_id_str();
@@ -119,7 +119,7 @@ pub async fn verify_dcap_attestation_with_given_timestamp(
     collateral: Option<QuoteCollateralV3>,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     let quote = Quote::parse(&input)?;
 
     let ca = quote_ca(&quote)?.as_id_str();
@@ -153,13 +153,13 @@ fn verify_dcap_attestation_with_collateral_and_timestamp(
     collateral: QuoteCollateralV3,
     now: u64,
     override_azure_outdated_tcb: bool,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     tracing::info!("Verifying DCAP attestation: {quote:?}");
 
     let fmspc = hex::encode_upper(quote_fmspc(&quote)?);
 
-    // Override outdated TCB only if we are on Azure and the FMSPC is known to
-    // be outdated
+    // Override outdated TCB only if we are on Azure and the FMSPC is known
+    // to be outdated
     let override_outdated_tcb = if override_azure_outdated_tcb {
         |mut tcb_info: TcbInfo| {
             // This is a workaround for a known outdated FMSPC used by azure
@@ -194,11 +194,11 @@ fn verify_dcap_attestation_with_collateral_and_timestamp(
 
     let measurements = MultiMeasurements::from_dcap_qvl_quote(&quote)?;
 
-    if get_quote_input_data(quote.report) != expected_input_data {
+    if get_quote_input_data(&quote.report) != expected_input_data {
         return Err(DcapVerificationError::InputMismatch);
     }
 
-    Ok(measurements)
+    Ok((measurements, quote))
 }
 
 #[cfg(any(test, feature = "mock"))]
@@ -206,7 +206,7 @@ pub async fn verify_dcap_attestation(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
     pccs: Option<Pccs>,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     let quote = Quote::parse(&input)?;
     let ca = quote_ca(&quote)?.as_id_str();
     let fmspc = hex::encode_upper(quote_fmspc(&quote)?);
@@ -221,11 +221,11 @@ pub async fn verify_dcap_attestation(
     verifier.verify(&input, &collateral, now)?;
 
     let measurements = MultiMeasurements::from_dcap_qvl_quote(&quote)?;
-    if get_quote_input_data(quote.report) != expected_input_data {
+    if get_quote_input_data(&quote.report) != expected_input_data {
         return Err(DcapVerificationError::InputMismatch);
     }
 
-    Ok(measurements)
+    Ok((measurements, quote))
 }
 
 #[cfg(any(test, feature = "mock"))]
@@ -233,7 +233,7 @@ pub fn verify_dcap_attestation_sync(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
     pccs: Pccs,
-) -> Result<MultiMeasurements, DcapVerificationError> {
+) -> Result<(MultiMeasurements, Quote), DcapVerificationError> {
     let quote = Quote::parse(&input)?;
     let ca = quote_ca(&quote)?.as_id_str();
     let fmspc = hex::encode_upper(quote_fmspc(&quote)?);
@@ -243,28 +243,26 @@ pub fn verify_dcap_attestation_sync(
     verifier.verify(&input, &collateral, now)?;
 
     let measurements = MultiMeasurements::from_dcap_qvl_quote(&quote)?;
-    if get_quote_input_data(quote.report.clone()) != expected_input_data {
+    if get_quote_input_data(&quote.report) != expected_input_data {
         return Err(DcapVerificationError::InputMismatch);
     }
-    Ok(measurements)
+    Ok((measurements, quote))
 }
 
 /// Create a mock quote for testing on non-confidential hardware
 #[cfg(any(test, feature = "mock"))]
-fn generate_quote(input: [u8; 64]) -> Result<Vec<u8>, tdx_attest::TdxAttestError> {
-    generate_mock_tdx_quote(input).map_err(|error| {
-        tdx_attest::TdxAttestError::QuoteFailure(format!("mock-tdx quote generation: {error}"))
-    })
+fn generate_quote(input: [u8; 64]) -> Result<Vec<u8>, AttestationError> {
+    generate_mock_tdx_quote(input).map_err(|error| AttestationError::Mock(format!("{error}")))
 }
 
 /// Create a quote
 #[cfg(not(any(test, feature = "mock")))]
-fn generate_quote(input: [u8; 64]) -> Result<Vec<u8>, tdx_attest::TdxAttestError> {
-    tdx_attest::get_quote(&input)
+fn generate_quote(input: [u8; 64]) -> Result<Vec<u8>, AttestationError> {
+    Ok(tdx_attest::get_quote(&input)?)
 }
 
 /// Given a [Report] get the input data regardless of report type
-pub fn get_quote_input_data(report: Report) -> [u8; 64] {
+pub fn get_quote_input_data(report: &Report) -> [u8; 64] {
     match report {
         Report::TD10(r) => r.report_data,
         Report::TD15(r) => r.base.report_data,
@@ -301,8 +299,8 @@ mod tests {
         let attestation_bytes: &'static [u8] =
             include_bytes!("../test-assets/dcap-tdx-1766059550570652607");
 
-        // To avoid this test stopping working when the certificate is no longer
-        // valid we pass in a timestamp
+        // To avoid this test stopping working when the certificate is no
+        // longer valid we pass in a timestamp
         let now = 1769509141;
 
         let measurements_json = br#"
@@ -328,7 +326,7 @@ mod tests {
         let async_collateral = serde_saphyr::from_slice(collateral_bytes).unwrap();
         let sync_collateral = serde_saphyr::from_slice(collateral_bytes).unwrap();
 
-        let async_measurements = verify_dcap_attestation_with_given_timestamp(
+        let (async_measurements, _) = verify_dcap_attestation_with_given_timestamp(
             attestation_bytes.to_vec(),
             [
                 116, 39, 106, 100, 143, 31, 212, 145, 244, 116, 162, 213, 44, 114, 216, 80, 227,
@@ -344,7 +342,7 @@ mod tests {
         .await
         .unwrap();
 
-        let sync_measurements = verify_dcap_attestation_with_timestamp_sync(
+        let (sync_measurements, _) = verify_dcap_attestation_with_timestamp_sync(
             attestation_bytes.to_vec(),
             [
                 116, 39, 106, 100, 143, 31, 212, 145, 244, 116, 162, 213, 44, 114, 216, 80, 227,
@@ -360,17 +358,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(async_measurements, sync_measurements);
-        measurement_policy.check_measurement(&async_measurements).unwrap();
+        let platform_metadata =
+            crate::mock_platform_metadata(crate::AttestationType::DcapTdx).unwrap();
+        measurement_policy
+            .check_measurement(&async_measurements, Some(&platform_metadata))
+            .unwrap();
     }
 
-    // This specifically tests a quote which has outdated TCB level from Azure
+    // This specifically tests a quote which has outdated TCB level from
+    // Azure
     #[tokio::test]
     async fn test_dcap_verify_azure_override() {
         let attestation_bytes: &'static [u8] =
             include_bytes!("../test-assets/azure_failed_dcap_quote_10.bin");
 
-        // To avoid this test stopping working when the certificate is no longer
-        // valid we pass in a timestamp
+        // To avoid this test stopping working when the certificate is no
+        // longer valid we pass in a timestamp
         let now = 1771414156;
 
         let collateral_bytes: &'static [u8] =
@@ -404,12 +407,10 @@ mod tests {
         .unwrap();
         let pccs = Pccs::new(Some(mock_pcs.base_url.clone()));
         let expected_input_data = [0xA5; 64];
-        let attestation_bytes = create_dcap_attestation(expected_input_data).unwrap();
+        let quote = create_dcap_attestation(expected_input_data).unwrap();
 
-        let measurements =
-            verify_dcap_attestation(attestation_bytes, expected_input_data, Some(pccs))
-                .await
-                .unwrap();
+        let (measurements, _) =
+            verify_dcap_attestation(quote, expected_input_data, Some(pccs)).await.unwrap();
 
         assert_eq!(measurements, crate::measurements::mock_dcap_measurements());
         assert_eq!(mock_pcs.tcb_call_count(), 1);

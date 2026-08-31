@@ -17,6 +17,9 @@ serde_json = "1.0.145"
 hex = "0.4.3"
 anyhow = "1.0.100"
 reqwest = { workspace = true }
+# No provider feature: only the process-default lookup is needed here — which
+# crypto provider backs it stays the application's choice.
+rustls = { workspace = true, default-features = false }
 x509-parser = "0.18.0"
 
 [dev-dependencies]
@@ -24,3 +27,6 @@ rcgen = "0.14.5"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 serde-saphyr = "0.0.22"
 mock-tdx = { workspace = true }
+# Tests exercise real TLS fetches against local mock servers, so they install
+# a concrete provider.
+rustls = { workspace = true, default-features = false, features = ["aws_lc_rs"] }

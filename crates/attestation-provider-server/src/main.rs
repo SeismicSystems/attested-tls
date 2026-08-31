@@ -97,8 +97,9 @@ async fn main() -> anyhow::Result<()> {
                 None => MeasurementPolicy::accept_anything(),
             };
 
-            let attestation_verifier =
-                AttestationVerifier::new(measurement_policy, None, cli.log_dcap_quote, false);
+            let attestation_verifier = AttestationVerifier::builder(measurement_policy)
+                .with_dump_dcap_quotes(cli.log_dcap_quote)
+                .build();
 
             let attestation_message =
                 attestation_provider_client(server_addr, attestation_verifier).await?;
