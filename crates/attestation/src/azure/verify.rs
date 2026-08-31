@@ -421,8 +421,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_decode_hcl() {
-        // From cvm-reverse-proxy/internal/attestation/azure/tdx/testdata/hclreport.
-        // bin
+        // From cvm-reverse-proxy/internal/attestation/azure/tdx/testdata/
+        // hclreport. bin
         let hcl_bytes: &'static [u8] = include_bytes!("../../test-assets/hclreport.bin");
 
         let hcl_report = hcl::HclReport::new(hcl_bytes.to_vec()).unwrap();
@@ -445,8 +445,8 @@ mod tests {
         );
 
         // Fixed timestamp within the quote collateral and AK certificate
-        // validity windows, so this offline fixture test does not expire when
-        // wall-clock time advances.
+        // validity windows, so this offline fixture test does not expire
+        // when wall-clock time advances.
         let now = 1_780_922_561;
 
         let attestation_document: AttestationDocument =

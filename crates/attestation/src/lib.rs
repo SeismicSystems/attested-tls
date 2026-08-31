@@ -169,8 +169,8 @@ impl AttestationType {
                 return Ok(AttestationType::AzureTdx);
             }
         }
-        // Otherwise try DCAP quote - this internally checks that the quote provider
-        // is `tdx_guest`
+        // Otherwise try DCAP quote - this internally checks that the quote
+        // provider is `tdx_guest`
         if tdx_attest::get_quote(&[0; 64]).is_ok() {
             if running_on_gcp()? {
                 return Ok(AttestationType::GcpTdx);
@@ -218,8 +218,8 @@ impl AttestationGenerator {
         attestation_type: AttestationType,
         attestation_provider_url: Option<String>,
     ) -> Result<Self, AttestationError> {
-        // If an attestation provider is given, normalize the URL and check that it
-        // looks like a local IP
+        // If an attestation provider is given, normalize the URL and check
+        // that it looks like a local IP
         let attestation_provider_url =
             attestation_provider_url.map(map_attestation_provider_url).transpose()?;
 
@@ -830,8 +830,8 @@ mod tests {
 
     #[test]
     fn attestation_detection_does_not_panic() {
-        // We dont enforce what platform the test is run on, only that the function
-        // does not panic
+        // We dont enforce what platform the test is run on, only that the
+        // function does not panic
         let _ = AttestationGenerator::new_with_detection(None, None);
     }
 
