@@ -485,8 +485,8 @@ impl MeasurementPolicy {
                 MultiMeasurements::Dcap(dcap_measurements) => {
                     match &measurement_record.measurements {
                         ExpectedMeasurements::Dcap(expected) => {
-                            // All measurements in our policy must be given and must
-                            // match
+                            // All measurements in our policy must be given
+                            // and must match
                             for (k, v) in expected.iter() {
                                 let actual_value = dcap_measurements.get(k);
                                 if !v.iter().any(|v| actual_value == v) {

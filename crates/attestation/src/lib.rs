@@ -695,8 +695,8 @@ impl AttestationVerifier {
             Ok(matched_measurements) => matched_measurements,
             Err(err) => {
                 // If this fails, and we have dynamic measurement policy,
-                // re-retrieve our measurement policy, then check
-                // the policy a second time
+                // re-retrieve our measurement policy, then
+                // check the policy a second time
                 if let Some(file_or_url) = &self.dynamic_measurement_policy {
                     let new_measurement_policy =
                         MeasurementPolicy::from_file_or_url(file_or_url.to_string()).await?;
