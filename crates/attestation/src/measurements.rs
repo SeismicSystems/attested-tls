@@ -1317,6 +1317,7 @@ mod tests {
                 cmdline_hash: [0x33; 48],
                 initrd_hash: [0x44; 48],
                 gpt_disk_guid_hash: [0x55; 48],
+                pe_sections: None,
             }),
             ExpectedMeasurements::Dcap(HashMap::from([
                 (DcapMeasurementRegister::MRTD, vec![[0x66; 48], [0x77; 48]]),
