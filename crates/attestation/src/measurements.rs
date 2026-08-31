@@ -229,7 +229,7 @@ pub enum ExpectedMeasurements {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "measurements", rename_all = "snake_case")]
 enum ExpectedMeasurementsHeader {
-    Image(DcapImageHashes),
+    Image(Box<DcapImageHashes>),
     Dcap(HashMap<String, Vec<String>>),
     Azure(HashMap<String, Vec<String>>),
     NoAttestation,
@@ -239,7 +239,9 @@ impl ExpectedMeasurements {
     /// Convert to the JSON format used in HTTP headers
     pub fn to_header_format(&self) -> Result<HeaderValue, MeasurementFormatError> {
         let header_measurements = match self {
-            Self::Image(image_hashes) => ExpectedMeasurementsHeader::Image(image_hashes.clone()),
+            Self::Image(image_hashes) => {
+                ExpectedMeasurementsHeader::Image(Box::new(image_hashes.clone()))
+            }
             Self::Dcap(dcap_measurements) => ExpectedMeasurementsHeader::Dcap(
                 dcap_measurements
                     .iter()
@@ -279,7 +281,7 @@ impl ExpectedMeasurements {
         }
 
         Ok(match serde_json::from_str(input)? {
-            ExpectedMeasurementsHeader::Image(image_hashes) => Self::Image(image_hashes),
+            ExpectedMeasurementsHeader::Image(image_hashes) => Self::Image(*image_hashes),
             ExpectedMeasurementsHeader::Dcap(dcap_measurements) => Self::Dcap(
                 dcap_measurements
                     .into_iter()

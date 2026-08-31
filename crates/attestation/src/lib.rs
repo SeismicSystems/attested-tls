@@ -1151,19 +1151,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verifier_returns_matched_no_attestation_measurements() {
+    async fn verifier_returns_no_verified_attestation_when_none_is_expected() {
         let verifier = AttestationVerifier::expect_none();
         let attestation = AttestationExchangeMessage::without_attestation();
         let input_data = [0u8; 64];
 
-        assert_eq!(
-            verifier.verify_attestation(attestation.clone(), input_data).await.unwrap(),
-            ExpectedMeasurements::NoAttestation
+        assert!(
+            verifier.verify_attestation(attestation.clone(), input_data).await.unwrap().is_none()
         );
-        assert_eq!(
-            verifier.verify_attestation_sync(attestation, input_data).unwrap(),
-            ExpectedMeasurements::NoAttestation
-        );
+        assert!(verifier.verify_attestation_sync(attestation, input_data).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1185,7 +1181,13 @@ mod tests {
         let result = verifier.verify_attestation_sync(attestation_evidence.into(), input_data);
 
         assert!(
-            matches!(result, Ok(ExpectedMeasurements::Dcap(_))),
+            matches!(
+                result,
+                Ok(Some(VerifiedAttestation {
+                    expected_measurements: Some(ExpectedMeasurements::Dcap(_)),
+                    ..
+                }))
+            ),
             "expected sync mock verification to return matched DCAP measurements: {result:?}"
         );
     }
@@ -1251,10 +1253,7 @@ mod tests {
         let generation = verifier_clone.measurement_policy_read().generation;
         verifier_clone.set_measurement_policy(MeasurementPolicy::expect_none(), generation);
 
-        assert!(matches!(
-            verifier.verify_attestation_sync(message, input_data),
-            Ok(ExpectedMeasurements::NoAttestation)
-        ));
+        assert!(matches!(verifier.verify_attestation_sync(message, input_data), Ok(None)));
     }
 
     #[test]
@@ -1294,10 +1293,13 @@ mod tests {
 
         tokio::fs::write(&policy_path, br#"[{"attestation_type":"dcap-tdx"}]"#).await.unwrap();
 
-        let matched_measurements =
-            verifier.verify_attestation(attestation.into(), input_data).await.unwrap();
+        let verified = verifier
+            .verify_attestation(attestation.into(), input_data)
+            .await
+            .unwrap()
+            .expect("mock evidence carries an attestation");
 
-        assert!(matches!(matched_measurements, ExpectedMeasurements::Dcap(_)));
+        assert!(matches!(verified.expected_measurements, Some(ExpectedMeasurements::Dcap(_))));
 
         assert!(verifier.measurement_policy().check_measurement(&measurements, None).is_ok());
     }
@@ -1397,9 +1399,11 @@ mod tests {
 
         std::fs::write(&policy_path, br#"[{"attestation_type":"dcap-tdx"}]"#).unwrap();
 
-        let matched_measurements =
-            verifier.verify_attestation_sync(attestation.into(), input_data).unwrap();
+        let verified = verifier
+            .verify_attestation_sync(attestation.into(), input_data)
+            .unwrap()
+            .expect("mock evidence carries an attestation");
 
-        assert!(matches!(matched_measurements, ExpectedMeasurements::Dcap(_)));
+        assert!(matches!(verified.expected_measurements, Some(ExpectedMeasurements::Dcap(_))));
     }
 }
