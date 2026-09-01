@@ -20,6 +20,9 @@ use std::{
 
 use attest_measure::platform::PlatformError;
 pub use attest_types::{AttestationEvidence, PlatformMetadata};
+/// Re-exported so callers can archive [EndorsementSnapshot::dcap] without
+/// depending on `dcap-qvl` directly
+pub use dcap_qvl::QuoteCollateralV3;
 use measurements::MultiMeasurements;
 use parity_scale_codec::{Decode, Encode};
 use pccs::{Pccs, PccsError};
@@ -352,6 +355,64 @@ pub enum PccsMode {
     Lazy,
 }
 
+/// Fetched endorsement material, bound to the instant it was evaluated at
+///
+/// Everything fetched expires — `nextUpdate` on TCB Info, QE Identity and
+/// both CRLs, `notAfter` on the issuer chains — so a bundle answers
+/// freshness only with respect to an instant. Pairing the two is what makes
+/// a verdict reproducible: same evidence, same snapshot, same verdict.
+///
+/// What a verifier fetches is a transport choice of the protocol, not a
+/// property of the platform: evidence can carry its own endorsements
+/// instead. Hence a struct that grows fields rather than an enum keyed by
+/// platform, and `#[non_exhaustive]` to keep that growth additive.
+///
+/// Two caveats. Trust anchors are compiled in rather than captured here, so
+/// a replay needs a build carrying the same ones — under `mock`, the mock
+/// root. And "endorsements" is loose: in [RFC 9334] terms a DCAP bundle
+/// spans both Endorsements (issuer chains, CRLs) and Reference Values (TCB
+/// Info, QE Identity).
+///
+/// [RFC 9334]: https://www.rfc-editor.org/rfc/rfc9334.html
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EndorsementSnapshot {
+    /// Seconds since the Unix epoch — the unit `dcap-qvl` and webpki take
+    pub at: u64,
+    /// `Some` when the verification fetched a DCAP bundle, `None` when the
+    /// evidence carried its own or the platform has no DCAP leg. The bundle
+    /// consumed, not a second copy: a cache can refresh between two fetches
+    pub dcap: Option<QuoteCollateralV3>,
+}
+
+impl EndorsementSnapshot {
+    /// A verification that fetched one DCAP collateral bundle
+    pub fn dcap(collateral: QuoteCollateralV3, at: u64) -> Self {
+        Self { at, dcap: Some(collateral) }
+    }
+}
+
+/// Evidence whose authenticity a Verifier established, with what it was
+/// established against
+///
+/// Not an Attestation Result in [RFC 9334] terms: the appraisal policy runs
+/// after this value is built, and a caller may configure it to check
+/// nothing, so no Reference Value comparison is implied. Archived beside
+/// the evidence, it reproduces the verdict.
+///
+/// [RFC 9334]: https://www.rfc-editor.org/rfc/rfc9334.html
+#[derive(Clone, Debug)]
+pub struct VerifiedAttestation {
+    /// MRTD and RTMR0–3 from the quote on DCAP and GCP. On Azure the vTPM
+    /// PCRs, which measure the guest boot rather than the launched TD and
+    /// chain to the TD quote: its report data commits to the HCL var data
+    /// carrying the AK public key that signs the vTPM quote
+    pub measurements: MultiMeasurements,
+    /// The half of a reproducible verdict that does not ride in the
+    /// evidence
+    pub endorsements: EndorsementSnapshot,
+}
+
 /// Allows remote attestations to be verified
 #[derive(Clone, Debug)]
 pub struct AttestationVerifier {
@@ -506,7 +567,7 @@ impl AttestationVerifier {
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
         expected_input_data: [u8; 64],
-    ) -> Result<Option<MultiMeasurements>, AttestationError> {
+    ) -> Result<Option<VerifiedAttestation>, AttestationError> {
         let attestation_type = attestation_exchange_message.attestation_type();
         tracing::debug!("Verifying {attestation_type} attestation");
 
@@ -514,7 +575,7 @@ impl AttestationVerifier {
             log_attestation(&attestation_exchange_message);
         }
 
-        let measurements = match attestation_type {
+        let verified = match attestation_type {
             AttestationType::None => {
                 if self.has_remote_attestation() {
                     return Err(AttestationError::AttestationTypeNotAccepted);
@@ -550,7 +611,7 @@ impl AttestationVerifier {
                     .attestation_evidence
                     .as_ref()
                     .ok_or(AttestationError::AttestationTypeNotAccepted)?;
-                let (measurements, quote) = dcap::verify_dcap_attestation(
+                let (verified, quote) = dcap::verify_dcap_attestation(
                     attestation_evidence.quote.clone(),
                     expected_input_data,
                     self.internal_pccs.clone(),
@@ -559,7 +620,7 @@ impl AttestationVerifier {
                 if attestation_type == AttestationType::GcpTdx {
                     self.gcp_provenance_checker.verify_provenance(quote).await?;
                 }
-                measurements
+                verified
             }
         };
 
@@ -569,20 +630,20 @@ impl AttestationVerifier {
             .as_ref()
             .map(|evidence| evidence.platform.clone());
         self.measurement_policy.check_measurement_with_gcp_cache(
-            &measurements,
+            &verified.measurements,
             platform_metadata.as_ref(),
             Some(&self.known_gcp_firmware),
         )?;
 
         tracing::debug!("Verification successful");
-        Ok(Some(measurements))
+        Ok(Some(verified))
     }
 
     pub fn verify_attestation_sync(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
         expected_input_data: [u8; 64],
-    ) -> Result<Option<MultiMeasurements>, AttestationError> {
+    ) -> Result<Option<VerifiedAttestation>, AttestationError> {
         let attestation_type = attestation_exchange_message.attestation_type();
         tracing::debug!("Verifying {attestation_type} attestation");
 
@@ -590,7 +651,7 @@ impl AttestationVerifier {
             log_attestation(&attestation_exchange_message);
         }
 
-        let measurements = match attestation_type {
+        let verified = match attestation_type {
             AttestationType::None => {
                 if self.has_remote_attestation() {
                     return Err(AttestationError::AttestationTypeNotAccepted);
@@ -632,7 +693,7 @@ impl AttestationVerifier {
                 #[cfg(not(any(test, feature = "mock")))]
                 let pccs = self.internal_pccs.clone().ok_or(AttestationError::NoPccs)?;
 
-                let (measurements, quote) = dcap::verify_dcap_attestation_sync(
+                let (verified, quote) = dcap::verify_dcap_attestation_sync(
                     attestation_evidence.quote.clone(),
                     expected_input_data,
                     pccs,
@@ -640,7 +701,7 @@ impl AttestationVerifier {
                 if attestation_type == AttestationType::GcpTdx {
                     self.gcp_provenance_checker.verify_provenance_sync(&quote)?;
                 }
-                measurements
+                verified
             }
         };
 
@@ -650,13 +711,13 @@ impl AttestationVerifier {
             .as_ref()
             .map(|evidence| evidence.platform.clone());
         self.measurement_policy.check_measurement_with_gcp_cache(
-            &measurements,
+            &verified.measurements,
             platform_metadata.as_ref(),
             Some(&self.known_gcp_firmware),
         )?;
 
         tracing::debug!("Verification successful");
-        Ok(Some(measurements))
+        Ok(Some(verified))
     }
 
     /// Whether we allow no remote attestation
@@ -859,5 +920,49 @@ mod tests {
         let result = verifier.verify_attestation_sync(attestation_evidence.into(), input_data);
 
         assert!(result.is_ok(), "expected sync mock verification to succeed: {result:?}");
+    }
+
+    /// On the fetching path, the reported bundle is the one the fetch
+    /// produced — the property that makes archiving it provenance rather
+    /// than a second, possibly different, copy.
+    #[tokio::test]
+    async fn verify_reports_the_collateral_the_fetch_produced() {
+        let input_data = [7u8; 64];
+        let quote_bytes = dcap::create_dcap_attestation(input_data).unwrap();
+        let quote = dcap_qvl::quote::Quote::parse(&quote_bytes).unwrap();
+        let fmspc = hex::encode_upper(dcap_qvl::intel::quote_fmspc(&quote).unwrap());
+        let ca = dcap_qvl::intel::quote_ca(&quote).unwrap().as_id_str();
+        let attestation_evidence = AttestationEvidence {
+            quote: quote_bytes,
+            platform: mock_platform_metadata(AttestationType::DcapTdx).unwrap(),
+        };
+
+        let mock_pcs_server = spawn_mock_pcs_server(MockPcsConfig::default()).await.unwrap();
+        let verifier = AttestationVerifier::mock_with_pccs(mock_pcs_server.base_url.clone());
+
+        let verified = verifier
+            .verify_attestation(attestation_evidence.into(), input_data)
+            .await
+            .unwrap()
+            .expect("mock evidence carries an attestation");
+
+        // The second read is served from the PCCS cache, not a second
+        // fetch, so it yields the same bundle the verification
+        // consumed. That is what makes it a valid comparison here —
+        // and the reason a caller must not rely on the pattern in
+        // general, where a refresh in between would hand back a
+        // different bundle
+        let (served, _is_fresh) = verifier
+            .internal_pccs
+            .as_ref()
+            .unwrap()
+            .get_collateral(
+                fmspc,
+                ca,
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(verified.endorsements.dcap, Some(served));
     }
 }
