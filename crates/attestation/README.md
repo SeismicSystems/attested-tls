@@ -12,14 +12,14 @@ This crate provides:
 
 ## Verification results
 
-`AttestationVerifier::verify_attestation` and
-`AttestationVerifier::verify_attestation_sync` return the
-`ExpectedMeasurements` value from the policy record that accepted the
-attestation. This is the matched policy value, not the raw register values
+When an attestation is present, `AttestationVerifier::verify_attestation` and
+`AttestationVerifier::verify_attestation_sync` return a `VerifiedAttestation`
+containing the `ExpectedMeasurements` value from the policy record that
+accepted it. This is the matched policy value, not the raw register values
 extracted from the quote. For example, verification against a portable policy
 returns `ExpectedMeasurements::Image`, while an allow-any DCAP policy returns
 `ExpectedMeasurements::Dcap` with an empty register map. Successful
-verification without attestation returns `ExpectedMeasurements::NoAttestation`.
+verification without attestation returns `None`.
 
 Matched expected measurements can be transported in an HTTP header using
 `ExpectedMeasurements::to_header_format` and reconstructed with
