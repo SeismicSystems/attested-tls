@@ -3,7 +3,8 @@
 //! Google publishes one signed `VMLaunchEndorsement` per TDX firmware
 //! build, keyed by MRTD, signed under `GCE-cc-tcb-root`. A live `gcp-tdx`
 //! verification fetches the quote's, verifies it at the verification
-//! instant and records it in the [`EndorsementSnapshot`].
+//! instant and records it in the [`EndorsementSnapshot`]; a replay verifies
+//! the recorded one at the snapshot's instant.
 //!
 //! [`EndorsementSnapshot`]: crate::EndorsementSnapshot
 use std::{
@@ -365,6 +366,8 @@ pub enum GcpEndorsementError {
     NoTdx,
     #[error("endorsement does not name MRTD {0}")]
     MrtdNotEndorsed(String),
+    #[error("archived snapshot carries no firmware endorsement")]
+    NotArchived,
     #[error("endorsement cache lock: {0}")]
     CacheLock(String),
     #[error("blocking task join: {0}")]
