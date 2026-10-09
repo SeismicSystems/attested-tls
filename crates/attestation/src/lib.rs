@@ -1319,8 +1319,8 @@ fn archived_gcp_firmware_endorsement(
 ) -> Result<Option<GcpFirmwareEndorsement>, AttestationError> {
     let mrtd = dcap_mrtd(&verified.measurements)?;
     // A quote minted by mock_tdx names firmware Google never endorsed, so a
-    // mock replay carries whatever endorsement it was given, as its DCAP leg
-    // carries mock collateral
+    // mock replay carries whatever endorsement it was given, as its DCAP
+    // leg carries mock collateral
     #[cfg(any(test, feature = "mock"))]
     if mrtd == mock_tdx::MOCK_MRTD {
         return Ok(endorsements.gcp_firmware.clone());
