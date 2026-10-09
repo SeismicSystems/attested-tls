@@ -439,7 +439,7 @@ mod tests {
     /// live collateral at a pinned instant, which reproduces nothing
     #[test]
     fn archived_without_collateral_is_refused() {
-        let endorsements = EndorsementSnapshot { at: 0, dcap: None };
+        let endorsements = EndorsementSnapshot { at: 0, dcap: None, gcp_firmware: None };
 
         let err = verify_dcap_attestation_archived(Vec::new(), [0; 64], &endorsements).unwrap_err();
 
