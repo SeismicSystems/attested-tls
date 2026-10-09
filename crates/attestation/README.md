@@ -30,8 +30,9 @@ a node replaying a log whose state depended on that verdict, or a third party
 re-checking published evidence without trusting whoever verified it first. It
 says whether the evidence was valid when first verified, not whether the
 platform is trustworthy now: collateral that has since expired or been revoked
-still passes. GCP evidence is not supported: its provenance registry is
-unsigned and mutable, so a replay cannot reproduce that check.
+still passes. GCP evidence is re-checked against the firmware endorsement
+recorded in the snapshot, while the provenance lookup is skipped: Google's
+registry is unsigned and mutable, and the original verification consulted it.
 
 Matched expected measurements can be transported in an HTTP header using
 `ExpectedMeasurements::to_header_format` and reconstructed with
@@ -180,7 +181,8 @@ Google's confidential-host registry, and the quote's MRTD must be named by the
 `https://pki.goog/cloud_integrity/GCE-cc-tcb-root_1.crt`, SHA-256
 `e876bc6978bf4f3da445f98a0a82363c8c0bae5a1fc033c6df65846a6cb0f18c`). The
 endorsement is fetched once per MRTD, verified at the verification instant,
-recorded in the `EndorsementSnapshot`.
+recorded in the `EndorsementSnapshot`, and re-verified at that instant when
+archived evidence is replayed.
 
 ## Measurements File
 
