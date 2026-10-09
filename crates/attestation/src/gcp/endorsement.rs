@@ -2,8 +2,10 @@
 //!
 //! Google publishes one signed `VMLaunchEndorsement` per TDX firmware
 //! build, keyed by MRTD, signed under `GCE-cc-tcb-root`. A live `gcp-tdx`
-//! verification fetches the quote's and verifies it at the verification
-//! instant.
+//! verification fetches the quote's, verifies it at the verification
+//! instant and records it in the [`EndorsementSnapshot`].
+//!
+//! [`EndorsementSnapshot`]: crate::EndorsementSnapshot
 use std::{
     collections::HashMap,
     io::Read,
