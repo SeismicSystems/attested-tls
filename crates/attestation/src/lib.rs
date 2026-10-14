@@ -1019,7 +1019,10 @@ fn log_attestation(attestation: &AttestationExchangeMessage) {
 /// Test whether it looks like we are running on GCP by hitting the metadata
 /// API
 fn running_on_gcp() -> Result<bool, AttestationError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
+    // ureq's default 30-second connect timeout takes precedence over the
+    // overall timeout.
+    let timeout = Duration::from_millis(200);
+    let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {

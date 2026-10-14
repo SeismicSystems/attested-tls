@@ -100,7 +100,24 @@ pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaErro
 
 /// Detect whether we are on Azure and can make an Azure vTPM attestation
 pub fn detect_azure_cvm() -> Result<bool, MaaError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
+    // Check the local vTPM report before contacting metadata so non-Azure
+    // hosts do not need a network probe.
+    match az_tdx_vtpm::is_tdx_cvm() {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::debug!("Azure CVM detection failed: platform is not an Azure TDX CVM");
+            return Ok(false);
+        }
+        Err(err) => {
+            tracing::debug!("Azure CVM detection failed: Azure TDX CVM probe failed: {err}");
+            return Ok(false);
+        }
+    }
+
+    // ureq's default 30-second connect timeout takes precedence over the
+    // overall timeout.
+    let timeout = Duration::from_millis(200);
+    let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
     let resp = match agent.get(AZURE_METADATA_API).set("Metadata", "true").call() {
         Ok(resp) => resp,
         Err(err) => {
@@ -127,17 +144,7 @@ pub fn detect_azure_cvm() -> Result<bool, MaaError> {
         return Err(MaaError::AzureMetadataApiNonJsonResponse { content_type: Some(content_type) });
     }
 
-    match az_tdx_vtpm::is_tdx_cvm() {
-        Ok(true) => Ok(true),
-        Ok(false) => {
-            tracing::debug!("Azure CVM detection failed: platform is not an Azure TDX CVM");
-            Ok(false)
-        }
-        Err(err) => {
-            tracing::debug!("Azure CVM detection failed: Azure TDX CVM probe failed: {err}");
-            Ok(false)
-        }
-    }
+    Ok(true)
 }
 
 /// Conversion from the quote type returned by the vTPM during evidence
