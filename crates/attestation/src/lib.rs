@@ -1153,10 +1153,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attestation_detection_does_not_panic() {
-        // We dont enforce what platform the test is run on, only that the
-        // function does not panic
-        let _ = AttestationGenerator::new_with_detection(None, None);
+    fn attestation_detection_completes_within_one_second() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        // Detection is synchronous, so run it on a separate thread to let
+        // the test fail promptly even if a probe blocks.
+        let worker = std::thread::spawn(move || {
+            // The platform and result may vary; require completion without
+            // a panic, as in the original detection test.
+            let _ = AttestationGenerator::new_with_detection(None, None);
+            sender.send(()).unwrap();
+        });
+
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("attestation detection panicked or did not complete within one second");
+        worker.join().expect("attestation detection panicked");
     }
 
     #[test]
