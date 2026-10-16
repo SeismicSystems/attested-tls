@@ -9,11 +9,12 @@
 //!   cannot await, such as a rustls verifier. Reads only the PCCS cache.
 //! - [verify_dcap_attestation_archived]: reproduces a past verdict, for a
 //!   relying party that must reach the same answer later, such as a node
-//!   replaying a log whose state depended on it, or an auditor. Checks the
-//!   [EndorsementSnapshot] the original verification reported, at its
-//!   instant, and fetches nothing. It says whether the evidence was valid
-//!   then, not whether the platform is trustworthy now: collateral that has
-//!   since expired or been revoked still passes.
+//!   replaying a log whose state depended on that verdict, or a third party
+//!   re-checking published evidence without trusting whoever verified it
+//!   first. Checks the [EndorsementSnapshot] the original verification
+//!   reported, at its instant, and fetches nothing. It says whether the
+//!   evidence was valid then, not whether the platform is trustworthy now:
+//!   collateral that has since expired or been revoked still passes.
 //!
 //! Every verify function returns the parsed [Quote] beside the
 //! [VerifiedAttestation]: verification parses it anyway, and the GCP

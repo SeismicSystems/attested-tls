@@ -756,11 +756,16 @@ impl AttestationVerifier {
     ///
     /// For a relying party that must reach the same answer as an earlier
     /// one, such as a node replaying a log whose state depended on that
-    /// verdict, or an auditor. It says whether the evidence was valid when
-    /// first verified, not whether the platform is trustworthy now:
-    /// freshness is judged at the snapshot's instant, so collateral that
-    /// has since expired or been revoked still passes. Live verification
-    /// belongs on [`Self::verify_attestation`].
+    /// verdict, or a third party re-checking published evidence without
+    /// trusting whoever verified it first. It says whether the evidence was
+    /// valid when first verified, not whether the platform is trustworthy
+    /// now: freshness is judged at the snapshot's instant, so collateral
+    /// that has since expired or been revoked still passes. Live
+    /// verification belongs on [`Self::verify_attestation`].
+    ///
+    /// The snapshot's instant is taken as given: nothing in the evidence
+    /// attests to it, so a caller replaying someone else's archive should
+    /// know what pins it.
     ///
     /// Nothing whose answer can change over time is fetched: on GCP the
     /// provenance lookup is skipped. Firmware for a portable-image policy
