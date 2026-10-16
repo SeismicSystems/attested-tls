@@ -170,7 +170,7 @@ impl AttestationType {
         matches!((self, peer), (AttestationType::DcapTdx, AttestationType::GcpTdx)) || *self == peer
     }
 
-    /// Detect what platform we are on by attempting an attestation
+    /// Detect the platform using local interfaces and cloud metadata.
     pub fn detect() -> Result<Self, AttestationError> {
         // First attempt azure, if the feature is present
         #[cfg(azure_attester_x86_64_linux)]
@@ -179,9 +179,9 @@ impl AttestationType {
                 return Ok(AttestationType::AzureTdx);
             }
         }
-        // Otherwise try DCAP quote - this internally checks that the quote
-        // provider is `tdx_guest`
-        if tdx_attest::get_quote(&[0; 64]).is_ok() {
+        // Check local TDX interfaces without depending on quote generation
+        // or the readiness of QGS/PCCS.
+        if tdx_attest::is_tdx_available() {
             if running_on_gcp()? {
                 return Ok(AttestationType::GcpTdx);
             } else {
