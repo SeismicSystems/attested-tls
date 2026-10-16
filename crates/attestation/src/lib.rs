@@ -170,7 +170,7 @@ impl AttestationType {
         matches!((self, peer), (AttestationType::DcapTdx, AttestationType::GcpTdx)) || *self == peer
     }
 
-    /// Detect what platform we are on by attempting an attestation
+    /// Detect the platform using local interfaces and cloud metadata.
     pub fn detect() -> Result<Self, AttestationError> {
         // First attempt azure, if the feature is present
         #[cfg(azure_attester_x86_64_linux)]
@@ -179,9 +179,9 @@ impl AttestationType {
                 return Ok(AttestationType::AzureTdx);
             }
         }
-        // Otherwise try DCAP quote - this internally checks that the quote
-        // provider is `tdx_guest`
-        if tdx_attest::get_quote(&[0; 64]).is_ok() {
+        // Check local TDX interfaces without depending on quote generation
+        // or the readiness of QGS/PCCS.
+        if tdx_attest::is_tdx_available() {
             if running_on_gcp()? {
                 return Ok(AttestationType::GcpTdx);
             } else {
@@ -1019,7 +1019,10 @@ fn log_attestation(attestation: &AttestationExchangeMessage) {
 /// Test whether it looks like we are running on GCP by hitting the metadata
 /// API
 fn running_on_gcp() -> Result<bool, AttestationError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
+    // ureq's default 30-second connect timeout takes precedence over the
+    // overall timeout.
+    let timeout = Duration::from_millis(200);
+    let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {
@@ -1150,10 +1153,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attestation_detection_does_not_panic() {
-        // We dont enforce what platform the test is run on, only that the
-        // function does not panic
-        let _ = AttestationGenerator::new_with_detection(None, None);
+    fn attestation_detection_completes_within_one_second() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        // Detection is synchronous, so run it on a separate thread to let
+        // the test fail promptly even if a probe blocks.
+        let worker = std::thread::spawn(move || {
+            // The platform and result may vary; require completion without
+            // a panic, as in the original detection test.
+            let _ = AttestationGenerator::new_with_detection(None, None);
+            sender.send(()).unwrap();
+        });
+
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("attestation detection panicked or did not complete within one second");
+        worker.join().expect("attestation detection panicked");
     }
 
     #[test]
