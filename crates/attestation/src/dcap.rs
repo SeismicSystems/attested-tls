@@ -20,7 +20,10 @@ use pccs::{Pccs, PccsError};
 use thiserror::Error;
 
 use crate::{
-    AttestationError, EndorsementSnapshot, VerifiedAttestation, measurements::MultiMeasurements,
+    AttestationError,
+    EndorsementSnapshot,
+    VerifiedAttestation,
+    measurements::MultiMeasurements,
 };
 
 /// FMSPC with which to override TCB level checks on Azure (not used for GCP
