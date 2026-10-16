@@ -36,6 +36,10 @@ const TPM_AK_CERT_IDX: u32 = 0x1C101D0;
 /// `1.3.6.1.5.5.7.48`. https://datatracker.ietf.org/doc/html/rfc5280#section-4.2.2.1
 const AIA_CA_ISSUERS_ACCESS_METHOD_OID: &str = "1.3.6.1.5.5.7.48.2";
 
+fn unix_time_now_secs() -> Result<u64, MaaError> {
+    Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())
+}
+
 /// Generate a TDX attestation on Azure.
 ///
 /// This may perform network calls. Azure's IMDS is queried for the TDX
@@ -47,10 +51,6 @@ const AIA_CA_ISSUERS_ACCESS_METHOD_OID: &str = "1.3.6.1.5.5.7.48.2";
 /// need network access or AIA-fetching logic. This keeps verification
 /// deterministic and easier to reuse in constrained verifier environments
 /// such as TEEs, onchain verification, or zero-knowledge proof generation.
-fn unix_time_now_secs() -> Result<u64, MaaError> {
-    Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())
-}
-
 pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaError> {
     let hcl_report_bytes = vtpm::get_report_with_report_data(&input_data)?;
 

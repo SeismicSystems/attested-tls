@@ -635,11 +635,6 @@ impl AttestationVerifier {
 
     /// Verify an attestation, and return the expected measurements from the
     /// matching policy record.
-    ///
-    /// Endorsements are fetched and every freshness check is evaluated at
-    /// the wall clock. To re-verify archived evidence against the
-    /// endorsements it was originally verified with, see
-    /// [`Self::verify_attestation_archived`].
     pub async fn verify_attestation(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
@@ -755,39 +750,37 @@ impl AttestationVerifier {
         self.verify_attestation_blocking(attestation_exchange_message, expected_input_data, None)
     }
 
-    /// Re-verifies archived evidence against the endorsements a previous
-    /// verification reported, then checks the configured policy.
+    /// Reproduces a past verdict: re-verifies archived evidence against the
+    /// [`EndorsementSnapshot`] its original verification reported, then
+    /// checks the configured policy.
     ///
-    /// `endorsements` is the [`EndorsementSnapshot`] that verification
-    /// handed back in its [`VerifiedAttestation`]. The DCAP quote is
-    /// checked against that snapshot's collateral bundle, and on Azure
-    /// the AK certificate chain is checked as well, both at the
-    /// snapshot's instant rather than the wall clock. Same evidence,
-    /// same snapshot, same verdict, however long after the fact.
+    /// For a relying party that must reach the same answer as an earlier
+    /// one, such as a node replaying a log whose state depended on that
+    /// verdict, or an auditor. It says whether the evidence was valid when
+    /// first verified, not whether the platform is trustworthy now:
+    /// freshness is judged at the snapshot's instant, so collateral that
+    /// has since expired or been revoked still passes. Live verification
+    /// belongs on [`Self::verify_attestation`].
     ///
-    /// Nothing whose answer can change over time is fetched. On GCP that
-    /// means the provenance lookup against Google's PPID registry is
-    /// skipped: the registry is unsigned and mutable, so a replay could
-    /// only learn what it says today, and the original verification
-    /// already consulted it. Firmware for a portable-image policy is
-    /// still fetched on a cache miss, since it is signed and
-    /// content-addressed by the quote's MRTD, so the fetch cannot
-    /// change the verdict. Recording the provenance outcome and the
-    /// firmware in the snapshot would remove these caveats and is left
-    /// for a later change.
+    /// Nothing whose answer can change over time is fetched: on GCP the
+    /// provenance lookup is skipped. Firmware for a portable-image policy
+    /// is still fetched on a cache miss, as it is signed and
+    /// content-addressed by the quote's MRTD.
     ///
-    /// This is not a way to verify live evidence with collateral obtained
-    /// out of band: the snapshot pins the instant along with the bundle,
-    /// and a live verification belongs on [`Self::verify_attestation`].
-    /// A snapshot with no DCAP bundle fails with
-    /// [`DcapVerificationError::ArchivedWithoutDcapCollateral`] rather than
-    /// being completed by a fetch.
+    /// Fails with
+    /// [`AttestationError::ArchivedWithDynamicMeasurementPolicy`]
+    /// on a verifier with a dynamic measurement policy, and with
+    /// [`DcapVerificationError::ArchivedWithoutDcapCollateral`] on a
+    /// snapshot with no DCAP bundle.
     pub fn verify_attestation_archived(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
         expected_input_data: [u8; 64],
         endorsements: &EndorsementSnapshot,
     ) -> Result<Option<VerifiedAttestation>, AttestationError> {
+        if self.dynamic_measurement_policy.is_some() {
+            return Err(AttestationError::ArchivedWithDynamicMeasurementPolicy);
+        }
         self.verify_attestation_blocking(
             attestation_exchange_message,
             expected_input_data,
@@ -867,8 +860,7 @@ impl AttestationVerifier {
                         endorsements,
                     )?,
                 };
-                // The registry is unsigned and mutable: a replay could only
-                // learn what it says now, so only a live verification asks
+                // The registry is mutable, so a replay cannot ask it
                 if attestation_type == AttestationType::GcpTdx && archived.is_none() {
                     self.gcp_provenance_checker.verify_provenance_sync(&quote)?;
                 }
@@ -1221,6 +1213,8 @@ pub enum AttestationError {
     Mock(String),
     #[error("Cannot retrieve platform metadata: {0}")]
     PlatformMetadata(#[from] PlatformError),
+    #[error("Archived verification cannot use a dynamic measurement policy")]
+    ArchivedWithDynamicMeasurementPolicy,
 }
 
 #[cfg(test)]
@@ -1353,6 +1347,28 @@ mod tests {
         assert_eq!(replayed.measurements, live.measurements);
         assert_eq!(replayed.expected_measurements, live.expected_measurements);
         assert_eq!(replayed.endorsements, live.endorsements);
+    }
+
+    /// A dynamic policy can change between the original verification and
+    /// the replay, so the replay would not reproduce the verdict
+    #[test]
+    fn archived_replay_refuses_a_dynamic_measurement_policy() {
+        let input_data = [7u8; 64];
+        let quote = dcap::create_dcap_attestation(input_data).unwrap();
+        let attestation_evidence = AttestationEvidence {
+            quote,
+            platform: mock_platform_metadata(AttestationType::DcapTdx).unwrap(),
+        };
+        let mut verifier = AttestationVerifier::mock();
+        verifier.dynamic_measurement_policy = Some("measurements.json".to_string());
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let endorsements = EndorsementSnapshot::dcap(mock_tdx::mock_collateral(), now);
+
+        let err = verifier
+            .verify_attestation_archived(attestation_evidence.into(), input_data, &endorsements)
+            .unwrap_err();
+
+        assert!(matches!(err, AttestationError::ArchivedWithDynamicMeasurementPolicy), "{err:?}");
     }
 
     /// A replay of GCP evidence does not consult the provenance registry.
