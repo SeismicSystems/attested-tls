@@ -99,7 +99,6 @@ mod tests {
         install_test_crypto_provider();
 
         let response = reqwest::Client::builder()
-            .connect_timeout(crate::HTTP_CONNECT_TIMEOUT)
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap()

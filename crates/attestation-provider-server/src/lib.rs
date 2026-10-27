@@ -52,7 +52,6 @@ pub async fn attestation_provider_client(
 
     let input_data = [0; 64];
     let response = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(1))
         .timeout(Duration::from_secs(1))
         .build()?
         .get(format!("http://{server_addr}/attest/{}", hex::encode(input_data)))

@@ -559,7 +559,6 @@ impl MeasurementPolicy {
 
             let response = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(HTTP_CONNECT_TIMEOUT)
                 .timeout(MEASUREMENT_POLICY_FETCH_TIMEOUT)
                 .build()?
                 .get(file_or_url)
