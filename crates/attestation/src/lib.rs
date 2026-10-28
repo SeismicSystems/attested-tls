@@ -767,15 +767,14 @@ impl AttestationVerifier {
     /// attests to it, so a caller replaying someone else's archive should
     /// know what pins it.
     ///
-    /// Nothing whose answer can change over time is fetched: on GCP the
-    /// provenance lookup is skipped. Firmware for a portable-image policy
-    /// is still fetched on a cache miss, as it is signed and
-    /// content-addressed by the quote's MRTD.
+    /// Nothing is fetched. GCP evidence is refused: its provenance registry
+    /// is unsigned and mutable, so a replay cannot reproduce that check.
     ///
     /// Fails with
     /// [`AttestationError::ArchivedWithDynamicMeasurementPolicy`]
-    /// on a verifier with a dynamic measurement policy, and with
-    /// [`DcapVerificationError::ArchivedWithoutDcapCollateral`] on a
+    /// on a verifier with a dynamic measurement policy, with
+    /// [`AttestationError::ArchivedGcpNotSupported`] on GCP evidence, and
+    /// with [`DcapVerificationError::ArchivedWithoutDcapCollateral`] on a
     /// snapshot with no DCAP bundle.
     pub fn verify_attestation_archived(
         &self,
@@ -786,6 +785,9 @@ impl AttestationVerifier {
         if self.dynamic_measurement_policy.is_some() {
             return Err(AttestationError::ArchivedWithDynamicMeasurementPolicy);
         }
+        if attestation_exchange_message.attestation_type() == AttestationType::GcpTdx {
+            return Err(AttestationError::ArchivedGcpNotSupported);
+        }
         self.verify_attestation_blocking(
             attestation_exchange_message,
             expected_input_data,
@@ -795,8 +797,7 @@ impl AttestationVerifier {
 
     /// The body shared by [`Self::verify_attestation_sync`] and
     /// [`Self::verify_attestation_archived`], which differ only in where
-    /// the DCAP leg gets its endorsements and whether the GCP provenance
-    /// lookup runs
+    /// the DCAP leg gets its endorsements
     fn verify_attestation_blocking(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
@@ -865,8 +866,7 @@ impl AttestationVerifier {
                         endorsements,
                     )?,
                 };
-                // The registry is mutable, so a replay cannot ask it
-                if attestation_type == AttestationType::GcpTdx && archived.is_none() {
+                if attestation_type == AttestationType::GcpTdx {
                     self.gcp_provenance_checker.verify_provenance_sync(&quote)?;
                 }
                 verified
@@ -1220,6 +1220,8 @@ pub enum AttestationError {
     PlatformMetadata(#[from] PlatformError),
     #[error("Archived verification cannot use a dynamic measurement policy")]
     ArchivedWithDynamicMeasurementPolicy,
+    #[error("Archived verification of GCP evidence is not supported")]
+    ArchivedGcpNotSupported,
 }
 
 #[cfg(test)]
@@ -1376,11 +1378,10 @@ mod tests {
         assert!(matches!(err, AttestationError::ArchivedWithDynamicMeasurementPolicy), "{err:?}");
     }
 
-    /// A replay of GCP evidence does not consult the provenance registry.
-    /// A mock PPID is not in Google's registry, so were the lookup to run
-    /// it would fail closed
+    /// A replay cannot reproduce GCP's provenance check, so GCP evidence is
+    /// refused rather than verified as plain DCAP
     #[test]
-    fn archived_gcp_replay_skips_the_provenance_lookup() {
+    fn archived_gcp_replay_is_refused() {
         let input_data = [7u8; 64];
         let quote = dcap::create_dcap_attestation(input_data).unwrap();
         let attestation_evidence = AttestationEvidence {
@@ -1391,22 +1392,11 @@ mod tests {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let endorsements = EndorsementSnapshot::dcap(mock_tdx::mock_collateral(), now);
 
-        let replayed = verifier.verify_attestation_archived(
-            attestation_evidence.into(),
-            input_data,
-            &endorsements,
-        );
+        let err = verifier
+            .verify_attestation_archived(attestation_evidence.into(), input_data, &endorsements)
+            .unwrap_err();
 
-        assert!(
-            matches!(
-                replayed,
-                Ok(Some(VerifiedAttestation {
-                    expected_measurements: Some(ExpectedMeasurements::Dcap(_)),
-                    ..
-                }))
-            ),
-            "expected archived GCP replay to pass the policy check: {replayed:?}"
-        );
+        assert!(matches!(err, AttestationError::ArchivedGcpNotSupported), "{err:?}");
     }
 
     /// On the fetching path, the reported bundle is the one the fetch
