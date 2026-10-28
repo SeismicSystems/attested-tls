@@ -26,7 +26,9 @@ pub use attest_types::{AttestationEvidence, PlatformMetadata};
 /// depending on `dcap-qvl` directly
 pub use dcap_qvl::QuoteCollateralV3;
 use measurements::{ExpectedMeasurements, MultiMeasurements};
-use parity_scale_codec::{Decode, Encode};
+/// Re-exported to allow encoding and decoding AttestationEvidence to or
+/// from bytes
+pub use parity_scale_codec::{Decode, Encode};
 pub use pccs::{CachePolicy, CollateralSource};
 use pccs::{Pccs, PccsError};
 use serde::{Deserialize, Serialize};
