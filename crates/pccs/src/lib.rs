@@ -53,6 +53,8 @@ const REFRESH_MARGIN_SECS: i64 = 300;
 const REFRESH_RETRY_SECS: u64 = 60;
 /// Timeout for PCCS HTTP requests.
 const PCCS_HTTP_TIMEOUT_SECS: u64 = 180;
+/// Fail promptly when a collateral service cannot be reached.
+const PCCS_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How many collateral fetches to perform concurrently during initial
 /// pre-warm
 const STARTUP_PREWARM_CONCURRENCY: usize = 8;
@@ -581,6 +583,8 @@ impl SharedReqwestHttp {
             subscription_key.as_ref().and_then(|_| Url::parse(base_url).ok());
         let authenticated_client = subscription_key.as_ref().map(|_| {
             reqwest::Client::builder()
+                .connect_timeout(PCCS_HTTP_CONNECT_TIMEOUT)
+                .timeout(Duration::from_secs(PCCS_HTTP_TIMEOUT_SECS))
                 .redirect(Policy::custom(|attempt| {
                     let same_origin_redirect = attempt
                         .previous()
@@ -599,7 +603,11 @@ impl SharedReqwestHttp {
         });
 
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(PCCS_HTTP_CONNECT_TIMEOUT)
+                .timeout(Duration::from_secs(PCCS_HTTP_TIMEOUT_SECS))
+                .build()
+                .expect("failed to build HTTP client"),
             authenticated_client,
             subscription_key_origin,
             subscription_key,
@@ -608,22 +616,21 @@ impl SharedReqwestHttp {
 
     fn request(&self, url: &str) -> Result<reqwest::RequestBuilder, InvalidHeaderValue> {
         let Some(subscription_key) = &self.subscription_key else {
-            return Ok(self.client.get(url).timeout(Duration::from_secs(PCCS_HTTP_TIMEOUT_SECS)));
+            return Ok(self.client.get(url));
         };
         let authenticated_request = Url::parse(url)
             .ok()
             .zip(self.subscription_key_origin.as_ref())
             .is_some_and(|(url, origin)| same_origin(&url, origin));
         if !authenticated_request {
-            return Ok(self.client.get(url).timeout(Duration::from_secs(PCCS_HTTP_TIMEOUT_SECS)));
+            return Ok(self.client.get(url));
         }
 
         let request = self
             .authenticated_client
             .as_ref()
             .expect("subscription key client should be configured")
-            .get(url)
-            .timeout(Duration::from_secs(PCCS_HTTP_TIMEOUT_SECS));
+            .get(url);
 
         let mut header = HeaderValue::from_bytes(subscription_key.as_bytes())?;
         header.set_sensitive(true);

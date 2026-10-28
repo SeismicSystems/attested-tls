@@ -26,7 +26,9 @@ pub use attest_types::{AttestationEvidence, PlatformMetadata};
 /// depending on `dcap-qvl` directly
 pub use dcap_qvl::QuoteCollateralV3;
 use measurements::{ExpectedMeasurements, MultiMeasurements};
-use parity_scale_codec::{Decode, Encode};
+/// Re-exported to allow encoding and decoding AttestationEvidence to or
+/// from bytes
+pub use parity_scale_codec::{Decode, Encode};
 pub use pccs::{CachePolicy, CollateralSource};
 use pccs::{Pccs, PccsError};
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,10 @@ pub(crate) fn install_test_crypto_provider() {
 
 /// Used in attestation type detection to check if we are on GCP
 const GCP_METADATA_API: &str = "http://metadata.google.internal";
+
+/// Connection timeout for external HTTP services. Request deadlines are
+/// configured separately for each operation.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How often a dynamic measurement policy is refreshed in the background.
 const DYNAMIC_MEASUREMENT_POLICY_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
@@ -334,8 +340,13 @@ impl AttestationGenerator {
 
         let url = format!("{}/attest/{}", url, hex::encode(input_data));
 
-        let mut response = ureq::get(&url)
-            .timeout(Duration::from_millis(1000))
+        // ureq's default connect timeout overrides the request timeout.
+        let timeout = Duration::from_secs(1);
+        let mut response = ureq::AgentBuilder::new()
+            .timeout_connect(timeout)
+            .timeout(timeout)
+            .build()
+            .get(&url)
             .call()
             .map_err(|err| AttestationError::AttestationProvider(err.to_string()))?
             .into_reader();
@@ -1178,8 +1189,10 @@ pub fn mock_platform_metadata(
 pub enum AttestationError {
     #[error("Certificate chain is empty")]
     NoCertificate,
+    #[cfg(feature = "azure-verifier")]
     #[error("X509 parse: {0}")]
     X509Parse(#[from] x509_parser::asn1_rs::Err<x509_parser::error::X509Error>),
+    #[cfg(feature = "azure-verifier")]
     #[error("X509: {0}")]
     X509(#[from] x509_parser::error::X509Error),
     #[error("Configuration mismatch - expected no remote attestation")]
