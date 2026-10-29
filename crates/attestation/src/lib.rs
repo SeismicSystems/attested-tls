@@ -340,16 +340,18 @@ impl AttestationGenerator {
 
         let url = format!("{}/attest/{}", url, hex::encode(input_data));
 
-        // ureq's default connect timeout overrides the request timeout.
         let timeout = Duration::from_secs(1);
-        let mut response = ureq::AgentBuilder::new()
-            .timeout_connect(timeout)
-            .timeout(timeout)
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .max_redirects(5)
+            .timeout_global(Some(timeout))
             .build()
+            .into();
+        let response = agent
             .get(&url)
             .call()
-            .map_err(|err| AttestationError::AttestationProvider(err.to_string()))?
-            .into_reader();
+            .map_err(|err| AttestationError::AttestationProvider(err.to_string()))?;
+        let mut response = response.into_body().into_reader();
         let mut body = Vec::new();
         response
             .read_to_end(&mut body)
@@ -1104,15 +1106,18 @@ fn log_attestation(attestation: &AttestationExchangeMessage) {
 /// Test whether it looks like we are running on GCP by hitting the metadata
 /// API
 fn running_on_gcp() -> Result<bool, AttestationError> {
-    // ureq's default 30-second connect timeout takes precedence over the
-    // overall timeout.
     let timeout = Duration::from_millis(200);
-    let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_global(Some(timeout))
+        .build()
+        .into();
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {
         return Ok(r.status() == 200 &&
-            r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
+            r.headers().get("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
     }
 
     Ok(false)

@@ -589,19 +589,22 @@ impl MeasurementPolicy {
                 return Err(MeasurementFormatError::InsecureHttpNotLoopback(file_or_url));
             }
 
-            let response = ureq::AgentBuilder::new()
-                .redirects(0)
-                .timeout_connect(HTTP_CONNECT_TIMEOUT)
-                .timeout(MEASUREMENT_POLICY_FETCH_TIMEOUT)
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .proxy(None)
+                .max_redirects(0)
+                .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+                .timeout_global(Some(MEASUREMENT_POLICY_FETCH_TIMEOUT))
                 .build()
+                .into();
+            let response = agent
                 .get(&file_or_url)
                 .call()
                 .map_err(|error| MeasurementFormatError::Ureq(Box::new(error)))?;
-            if (300..400).contains(&response.status()) {
-                return Err(MeasurementFormatError::RedirectNotAllowed(response.status()));
+            if response.status().is_redirection() {
+                return Err(MeasurementFormatError::RedirectNotAllowed(response.status().as_u16()));
             }
             let mut measurements_json = Vec::new();
-            response.into_reader().read_to_end(&mut measurements_json)?;
+            response.into_body().into_reader().read_to_end(&mut measurements_json)?;
             Self::from_json_bytes(measurements_json)
         } else {
             Self::from_json_bytes(std::fs::read(file_or_url)?)
@@ -2090,7 +2093,10 @@ mod tests {
         let result = MeasurementPolicy::from_file_or_url_sync(url);
         server.join().unwrap();
         assert!(
-            matches!(result, Err(MeasurementFormatError::Io(ref err)) if err.kind() == std::io::ErrorKind::TimedOut),
+            matches!(result, Err(MeasurementFormatError::Io(ref err)) if matches!(
+                err.get_ref().and_then(|source| source.downcast_ref::<ureq::Error>()),
+                Some(ureq::Error::Timeout(ureq::Timeout::Global))
+            )),
             "expected a body read timeout, got {result:?}"
         );
     }

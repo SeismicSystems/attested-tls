@@ -118,11 +118,14 @@ pub fn detect_azure_cvm() -> Result<bool, MaaError> {
         }
     }
 
-    // ureq's default 30-second connect timeout takes precedence over the
-    // overall timeout.
     let timeout = Duration::from_millis(200);
-    let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
-    let resp = match agent.get(AZURE_METADATA_API).set("Metadata", "true").call() {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_global(Some(timeout))
+        .build()
+        .into();
+    let resp = match agent.get(AZURE_METADATA_API).header("Metadata", "true").call() {
         Ok(resp) => resp,
         Err(err) => {
             tracing::debug!("Azure CVM detection failed: Azure metadata API request failed: {err}");
@@ -140,7 +143,9 @@ pub fn detect_azure_cvm() -> Result<bool, MaaError> {
 
     // Ensure the response has a JSON content type
     let content_type = resp
-        .header(CONTENT_TYPE.as_str())
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned())
         .ok_or_else(|| MaaError::AzureMetadataApiNonJsonResponse { content_type: None })?;
 
@@ -275,16 +280,20 @@ fn fetch_certificate_der(url: &str) -> Result<Vec<u8>, MaaError> {
         return Err(MaaError::UnsupportedAiaUrl { url: url.to_string() });
     }
 
-    let response = ureq::AgentBuilder::new()
-        .timeout_connect(HTTP_CONNECT_TIMEOUT)
-        .timeout(Duration::from_secs(10))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+        .timeout_global(Some(Duration::from_secs(10)))
         .build()
+        .into();
+    let response = agent
         .get(url)
         .call()
         .map_err(|err| MaaError::AiaFetch { url: url.to_string(), source: Box::new(err) })?;
 
     let mut bytes = Vec::new();
-    response.into_reader().take(1024 * 1024).read_to_end(&mut bytes)?;
+    response.into_body().into_reader().take(1024 * 1024).read_to_end(&mut bytes)?;
 
     // RFC 5280 id-ad-caIssuers HTTP URLs are expected to serve DER-encoded
     // certificates. Accept explicit PEM armor as a lenient fallback for
