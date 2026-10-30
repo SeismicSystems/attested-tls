@@ -3,31 +3,29 @@
 //!
 //! Three entry points, one per situation a relying party is in:
 //!
-//! - [verify_dcap_attestation] is for a live handshake with an async
-//!   runtime to hand: it fetches whatever collateral the quote needs and
+//! - [verify_dcap_attestation]: a live handshake. Fetches collateral and
 //!   judges freshness at the wall clock.
-//! - [verify_dcap_attestation_sync] is for a live handshake inside a
-//!   callback that cannot await, such as a rustls certificate verifier. It
-//!   can only read the PCCS cache, so the collateral has to be there
-//!   already; a miss fails and starts a background fetch for next time.
-//! - [verify_dcap_attestation_archived] is for re-checking evidence long
-//!   after the fact, against the [EndorsementSnapshot] its original
-//!   verification reported. It fetches nothing and judges freshness at the
-//!   snapshot's instant, so the verdict is the same however much later it
-//!   runs.
-//!
-//! They differ only in where collateral and the instant come from; the
-//! verification itself is one function they all reach.
+//! - [verify_dcap_attestation_sync]: a live handshake in a callback that
+//!   cannot await, such as a rustls verifier. Reads only the PCCS cache.
+//! - [verify_dcap_attestation_archived]: reproduces a past verdict, for a
+//!   relying party that must reach the same answer later, such as a node
+//!   replaying a log whose state depended on that verdict, or a third party
+//!   re-checking published evidence without trusting whoever verified it
+//!   first. Checks the [EndorsementSnapshot] the original verification
+//!   reported, at its instant, and fetches nothing. It says whether the
+//!   evidence was valid then, not whether the platform is trustworthy now:
+//!   collateral that has since expired or been revoked still passes.
 //!
 //! Every verify function returns the parsed [Quote] beside the
 //! [VerifiedAttestation]: verification parses it anyway, and the GCP
 //! provenance check needs the PPID from its PCK leaf. Other callers drop
 //! it.
+#[cfg(feature = "azure-verifier")]
+use dcap_qvl::tcb_info::TcbInfo;
 use dcap_qvl::{
     QuoteCollateralV3,
     intel::{quote_ca, quote_fmspc},
     quote::{Quote, Report},
-    tcb_info::TcbInfo,
     verify::QuoteVerifier,
 };
 #[cfg(any(test, feature = "mock"))]
@@ -46,6 +44,7 @@ use crate::{
 
 /// FMSPC with which to override TCB level checks on Azure (not used for GCP
 /// or other platforms)
+#[cfg(feature = "azure-verifier")]
 const AZURE_BAD_FMSPC: &str = "90C06F000000";
 
 /// Generate a TDX quote
@@ -56,10 +55,6 @@ pub fn create_dcap_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, Attestat
 }
 
 /// Verify a DCAP TDX quote
-///
-/// Collateral comes from `pccs`, and every freshness check is evaluated
-/// at the wall clock. To re-verify archived evidence, see
-/// [verify_dcap_attestation_archived].
 #[cfg(not(any(test, feature = "mock")))]
 pub async fn verify_dcap_attestation(
     input: Vec<u8>,
@@ -89,14 +84,9 @@ pub fn verify_dcap_attestation_sync(
 /// Re-verify a DCAP TDX quote against the endorsements a previous
 /// verification reported
 ///
-/// The quote is checked against the snapshot's collateral bundle, with
-/// every freshness check evaluated at the snapshot's instant rather than
-/// the wall clock, and nothing is fetched. Same evidence, same snapshot,
-/// same verdict, however much later it runs.
-///
-/// A snapshot with no DCAP bundle is refused rather than completed by a
-/// fetch: that would evaluate live collateral at a pinned instant, which
-/// reproduces nothing.
+/// Reproduces a past verdict rather than judging the platform now; see
+/// [crate::dcap] for when that is useful. Nothing is fetched, and a
+/// snapshot with no DCAP bundle is refused.
 #[cfg(not(any(test, feature = "mock")))]
 pub fn verify_dcap_attestation_archived(
     input: Vec<u8>,
@@ -180,12 +170,6 @@ fn unix_time_now_secs() -> Result<u64, DcapVerificationError> {
 }
 
 /// Fetch collateral through the PCCS and verify at the wall clock
-///
-/// Every live verification goes through here or [verify_quote_sync]: the
-/// public entry points pick the root per build, while the Azure verifier
-/// passes Intel's whatever the build. `override_azure_outdated_tcb` is the
-/// TCB relaxation the Azure verifier applies to the quote inside an HCL
-/// report.
 pub(crate) async fn verify_quote(
     raw_quote: Vec<u8>,
     expected_input_data: [u8; 64],
@@ -241,9 +225,6 @@ pub(crate) fn verify_quote_sync(
 
 /// Verify against a reported snapshot: its bundle, at its instant, with
 /// nothing fetched
-///
-/// The snapshot is checked before the quote is parsed, so a snapshot with
-/// no DCAP bundle is refused up front.
 pub(crate) fn verify_quote_archived(
     raw_quote: Vec<u8>,
     expected_input_data: [u8; 64],
@@ -280,30 +261,34 @@ fn verify_quote_with_collateral(
 
     let fmspc = hex::encode_upper(quote_fmspc(&quote)?);
 
-    // Override outdated TCB only if we are on Azure and the FMSPC is known
-    // to be outdated
-    let override_outdated_tcb = if override_azure_outdated_tcb {
-        |mut tcb_info: TcbInfo| {
-            // This is a workaround for a known outdated FMSPC used by azure
-            if tcb_info.fmspc == AZURE_BAD_FMSPC {
-                for tcb_level in &mut tcb_info.tcb_levels {
-                    if tcb_level.tcb.sgx_components[7].svn > 3 {
-                        tcb_level.tcb.sgx_components[7].svn = 3
+    #[cfg(feature = "azure-verifier")]
+    let verified_report = if override_azure_outdated_tcb {
+        verifier.dangerous_verify_with_tcb_override(
+            &raw_quote,
+            &collateral,
+            now,
+            |mut tcb_info: TcbInfo| {
+                // Work around a known outdated Azure FMSPC only when
+                // explicitly enabled.
+                if tcb_info.fmspc == AZURE_BAD_FMSPC {
+                    for tcb_level in &mut tcb_info.tcb_levels {
+                        if tcb_level.tcb.sgx_components[7].svn > 3 {
+                            tcb_level.tcb.sgx_components[7].svn = 3
+                        }
                     }
                 }
-            }
-            tcb_info
-        }
+                tcb_info
+            },
+        )?
     } else {
-        |tcb_info: TcbInfo| tcb_info
+        verifier.verify(&raw_quote, &collateral, now)?
     };
 
-    let verified_report = verifier.dangerous_verify_with_tcb_override(
-        &raw_quote,
-        &collateral,
-        now,
-        override_outdated_tcb,
-    )?;
+    #[cfg(not(feature = "azure-verifier"))]
+    let verified_report = {
+        let _ = override_azure_outdated_tcb;
+        verifier.verify(&raw_quote, &collateral, now)?
+    };
 
     if verified_report.status != "UpToDate" {
         tracing::warn!(
@@ -409,9 +394,8 @@ mod tests {
         let fixture_collateral: QuoteCollateralV3 =
             serde_saphyr::from_slice(collateral_bytes).unwrap();
 
-        // A real Intel quote, so it is checked against Intel's root
-        // whatever the build: the public archived entry point would
-        // use the mock root under `test`
+        // A real Intel quote, which the public entry point would check
+        // against the mock root under `test`
         let (VerifiedAttestation { measurements, endorsements, .. }, _) = verify_quote_archived(
             attestation_bytes.to_vec(),
             [
@@ -426,17 +410,15 @@ mod tests {
         )
         .unwrap();
 
-        // The snapshot handed back is the one the verification ran against,
-        // which is what lets a caller archive and replay it
+        // The snapshot handed back is the one the verification ran against
         assert_eq!(endorsements, EndorsementSnapshot::dcap(fixture_collateral, now));
         let platform_metadata =
             crate::mock_platform_metadata(crate::AttestationType::DcapTdx).unwrap();
         measurement_policy.check_measurement(&measurements, Some(&platform_metadata)).unwrap();
     }
 
-    /// An archived snapshot without a bundle is refused up front, before
-    /// the quote is even parsed: completing it with a fetch would evaluate
-    /// live collateral at a pinned instant, which reproduces nothing
+    /// An archived snapshot without a bundle is refused, not completed by a
+    /// fetch
     #[test]
     fn archived_without_collateral_is_refused() {
         let endorsements = EndorsementSnapshot { at: 0, dcap: None, gcp_firmware: None };
@@ -462,7 +444,7 @@ mod tests {
 
         let collateral = serde_saphyr::from_slice(collateral_bytes).unwrap();
 
-        verify_quote_archived(
+        let result = verify_quote_archived(
             attestation_bytes.to_vec(),
             [
                 210, 20, 43, 100, 53, 152, 235, 95, 174, 43, 200, 82, 157, 215, 154, 85, 139, 41,
@@ -472,8 +454,12 @@ mod tests {
             &EndorsementSnapshot::dcap(collateral, now),
             true,
             &QuoteVerifier::new_prod(),
-        )
-        .unwrap();
+        );
+
+        #[cfg(feature = "azure-verifier")]
+        result.unwrap();
+        #[cfg(not(feature = "azure-verifier"))]
+        assert!(result.is_err());
     }
 
     #[tokio::test]

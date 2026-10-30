@@ -25,6 +25,8 @@ use sha2::Sha256;
 use thiserror::Error;
 use x509_parser::prelude::*;
 
+use crate::HTTP_CONNECT_TIMEOUT;
+
 /// Where Google publishes one endorsement per TDX firmware MRTD
 const GCE_TCB_ENDORSEMENT_BUCKET_URL: &str =
     "https://storage.googleapis.com/gce_tcb_integrity/ovmf_x64_csm/tdx";
@@ -298,10 +300,16 @@ impl GcpEndorsementChecker {
 
 /// Synchronously fetch an endorsement document
 fn fetch_endorsement(url: &str) -> Result<Vec<u8>, GcpEndorsementError> {
-    let agent = ureq::AgentBuilder::new().timeout(GCE_TCB_ENDORSEMENT_FETCH_TIMEOUT).build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+        .timeout_global(Some(GCE_TCB_ENDORSEMENT_FETCH_TIMEOUT))
+        .build()
+        .into();
     let response = match agent.get(url).call() {
         Ok(response) => response,
-        Err(ureq::Error::Status(status, _)) => {
+        Err(ureq::Error::StatusCode(status)) => {
             return Err(GcpEndorsementError::Fetch(format!("HTTP status {status}")));
         }
         Err(err) => {
@@ -319,6 +327,7 @@ fn fetch_endorsement(url: &str) -> Result<Vec<u8>, GcpEndorsementError> {
 
     let mut document = Vec::new();
     response
+        .into_body()
         .into_reader()
         .take(GCE_TCB_ENDORSEMENT_MAX_BYTES + 1)
         .read_to_end(&mut document)
@@ -370,7 +379,7 @@ pub enum GcpEndorsementError {
 #[cfg(test)]
 mod tests {
     use std::{
-        io::{Read as _, Write as _},
+        io::Write as _,
         net::TcpListener,
         sync::atomic::{AtomicUsize, Ordering},
     };

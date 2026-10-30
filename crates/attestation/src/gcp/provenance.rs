@@ -10,6 +10,8 @@ use dcap_qvl::{intel, quote::Quote};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::HTTP_CONNECT_TIMEOUT;
+
 /// Public registry of GCP Confidential VM TDX PPIDs
 const GCP_PROVENANCE_REGISTRY_URL: &str =
     "https://storage.googleapis.com/confidential-host-registry";
@@ -20,9 +22,9 @@ const GCP_PROVENANCE_DOCUMENT_MAX_BYTES: u64 = 16 * 1024;
 const GCP_PPID_BYTES: usize = 16;
 /// How long a cached PPID remains trusted before revalidation
 const GCP_PROVENANCE_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// Overall timeout for fetching a provenance document (covers DNS, connect,
-/// TLS handshake and read)
-/// This matches the timeout in Google's Go provenance checker tool
+/// Overall timeout for fetching a provenance document, including DNS
+/// resolution. This matches the timeout in Google's Go provenance checker
+/// tool
 const GCP_PROVENANCE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Checks PPIDs extracted from DCAP quotes against Google's public bucket,
@@ -176,10 +178,16 @@ fn extract_ppid_from_quote(quote: &Quote) -> Result<[u8; GCP_PPID_BYTES], GcpPro
 
 /// Synchronously attempt to fetch provenance document
 fn fetch_provenance_document(url: &str) -> Result<String, GcpProvenanceError> {
-    let agent = ureq::AgentBuilder::new().timeout(GCP_PROVENANCE_FETCH_TIMEOUT).build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+        .timeout_global(Some(GCP_PROVENANCE_FETCH_TIMEOUT))
+        .build()
+        .into();
     let response = match agent.get(url).call() {
         Ok(response) => response,
-        Err(ureq::Error::Status(status, _)) => {
+        Err(ureq::Error::StatusCode(status)) => {
             return Err(GcpProvenanceError::RegistryFetch(format!("HTTP status {status}")));
         }
         Err(err) => {
@@ -195,7 +203,8 @@ fn fetch_provenance_document(url: &str) -> Result<String, GcpProvenanceError> {
         )));
     }
 
-    let mut limited_reader = response.into_reader().take(GCP_PROVENANCE_DOCUMENT_MAX_BYTES + 1);
+    let mut limited_reader =
+        response.into_body().into_reader().take(GCP_PROVENANCE_DOCUMENT_MAX_BYTES + 1);
     let mut document = String::new();
     limited_reader
         .read_to_string(&mut document)

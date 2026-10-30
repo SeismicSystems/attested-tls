@@ -21,6 +21,7 @@ use super::{
     ensure_azure_attestation_payload_size,
     tpm_quote::TpmQuote,
 };
+use crate::HTTP_CONNECT_TIMEOUT;
 
 /// Used in attestation type detection to check if we are on Azure
 const AZURE_METADATA_API: &str = "http://169.254.169.254/metadata/instance";
@@ -36,6 +37,10 @@ const TPM_AK_CERT_IDX: u32 = 0x1C101D0;
 /// `1.3.6.1.5.5.7.48`. https://datatracker.ietf.org/doc/html/rfc5280#section-4.2.2.1
 const AIA_CA_ISSUERS_ACCESS_METHOD_OID: &str = "1.3.6.1.5.5.7.48.2";
 
+fn unix_time_now_secs() -> Result<u64, MaaError> {
+    Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())
+}
+
 /// Generate a TDX attestation on Azure.
 ///
 /// This may perform network calls. Azure's IMDS is queried for the TDX
@@ -47,10 +52,6 @@ const AIA_CA_ISSUERS_ACCESS_METHOD_OID: &str = "1.3.6.1.5.5.7.48.2";
 /// need network access or AIA-fetching logic. This keeps verification
 /// deterministic and easier to reuse in constrained verifier environments
 /// such as TEEs, onchain verification, or zero-knowledge proof generation.
-fn unix_time_now_secs() -> Result<u64, MaaError> {
-    Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())
-}
-
 pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaError> {
     let hcl_report_bytes = vtpm::get_report_with_report_data(&input_data)?;
 
@@ -103,8 +104,28 @@ pub fn create_azure_attestation(input_data: [u8; 64]) -> Result<Vec<u8>, MaaErro
 
 /// Detect whether we are on Azure and can make an Azure vTPM attestation
 pub fn detect_azure_cvm() -> Result<bool, MaaError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
-    let resp = match agent.get(AZURE_METADATA_API).set("Metadata", "true").call() {
+    // Check the local vTPM report before contacting metadata so non-Azure
+    // hosts do not need a network probe.
+    match az_tdx_vtpm::is_tdx_cvm() {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::debug!("Azure CVM detection failed: platform is not an Azure TDX CVM");
+            return Ok(false);
+        }
+        Err(err) => {
+            tracing::debug!("Azure CVM detection failed: Azure TDX CVM probe failed: {err}");
+            return Ok(false);
+        }
+    }
+
+    let timeout = Duration::from_millis(200);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_global(Some(timeout))
+        .build()
+        .into();
+    let resp = match agent.get(AZURE_METADATA_API).header("Metadata", "true").call() {
         Ok(resp) => resp,
         Err(err) => {
             tracing::debug!("Azure CVM detection failed: Azure metadata API request failed: {err}");
@@ -122,7 +143,9 @@ pub fn detect_azure_cvm() -> Result<bool, MaaError> {
 
     // Ensure the response has a JSON content type
     let content_type = resp
-        .header(CONTENT_TYPE.as_str())
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned())
         .ok_or_else(|| MaaError::AzureMetadataApiNonJsonResponse { content_type: None })?;
 
@@ -130,17 +153,7 @@ pub fn detect_azure_cvm() -> Result<bool, MaaError> {
         return Err(MaaError::AzureMetadataApiNonJsonResponse { content_type: Some(content_type) });
     }
 
-    match az_tdx_vtpm::is_tdx_cvm() {
-        Ok(true) => Ok(true),
-        Ok(false) => {
-            tracing::debug!("Azure CVM detection failed: platform is not an Azure TDX CVM");
-            Ok(false)
-        }
-        Err(err) => {
-            tracing::debug!("Azure CVM detection failed: Azure TDX CVM probe failed: {err}");
-            Ok(false)
-        }
-    }
+    Ok(true)
 }
 
 /// Conversion from the quote type returned by the vTPM during evidence
@@ -267,13 +280,20 @@ fn fetch_certificate_der(url: &str) -> Result<Vec<u8>, MaaError> {
         return Err(MaaError::UnsupportedAiaUrl { url: url.to_string() });
     }
 
-    let response = ureq::get(url)
-        .timeout(Duration::from_secs(10))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+        .timeout_global(Some(Duration::from_secs(10)))
+        .build()
+        .into();
+    let response = agent
+        .get(url)
         .call()
         .map_err(|err| MaaError::AiaFetch { url: url.to_string(), source: Box::new(err) })?;
 
     let mut bytes = Vec::new();
-    response.into_reader().take(1024 * 1024).read_to_end(&mut bytes)?;
+    response.into_body().into_reader().take(1024 * 1024).read_to_end(&mut bytes)?;
 
     // RFC 5280 id-ad-caIssuers HTTP URLs are expected to serve DER-encoded
     // certificates. Accept explicit PEM armor as a lenient fallback for

@@ -35,7 +35,9 @@ pub use gcp::{
     GcpFirmwareEndorsement,
 };
 use measurements::{ExpectedMeasurements, MultiMeasurements};
-use parity_scale_codec::{Decode, Encode};
+/// Re-exported to allow encoding and decoding AttestationEvidence to or
+/// from bytes
+pub use parity_scale_codec::{Decode, Encode};
 pub use pccs::{CachePolicy, CollateralSource};
 use pccs::{Pccs, PccsError};
 use serde::{Deserialize, Serialize};
@@ -60,6 +62,10 @@ pub(crate) fn install_test_crypto_provider() {
 
 /// Used in attestation type detection to check if we are on GCP
 const GCP_METADATA_API: &str = "http://metadata.google.internal";
+
+/// Connection timeout for external HTTP services. Request deadlines are
+/// configured separately for each operation.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How often a dynamic measurement policy is refreshed in the background.
 const DYNAMIC_MEASUREMENT_POLICY_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
@@ -179,7 +185,7 @@ impl AttestationType {
         matches!((self, peer), (AttestationType::DcapTdx, AttestationType::GcpTdx)) || *self == peer
     }
 
-    /// Detect what platform we are on by attempting an attestation
+    /// Detect the platform using local interfaces and cloud metadata.
     pub fn detect() -> Result<Self, AttestationError> {
         // First attempt azure, if the feature is present
         #[cfg(azure_attester_x86_64_linux)]
@@ -188,9 +194,9 @@ impl AttestationType {
                 return Ok(AttestationType::AzureTdx);
             }
         }
-        // Otherwise try DCAP quote - this internally checks that the quote
-        // provider is `tdx_guest`
-        if tdx_attest::get_quote(&[0; 64]).is_ok() {
+        // Check local TDX interfaces without depending on quote generation
+        // or the readiness of QGS/PCCS.
+        if tdx_attest::is_tdx_available() {
             if running_on_gcp()? {
                 return Ok(AttestationType::GcpTdx);
             } else {
@@ -249,8 +255,9 @@ fn azure_platform_metadata() -> PlatformMetadata {
                 // Mirror metadata_for's Azure adjustment: don't count the
                 // Azure resource disk.
                 num_disks: count_block_devices().saturating_sub(1),
-                // Azure evidence carries no CCEL, so metadata_for reports no
-                // SMBIOS handoff hash and no dm-verity boot for this platform.
+                // Azure evidence carries no CCEL, so metadata_for reports
+                // no SMBIOS handoff hash and no dm-verity boot for this
+                // platform.
                 acpi: None,
                 smbios_handoff: None,
                 dm_verity_boot: false,
@@ -414,11 +421,18 @@ impl AttestationGenerator {
 
         let url = format!("{}/attest/{}", url, hex::encode(input_data));
 
-        let mut response = ureq::get(&url)
-            .timeout(Duration::from_millis(1000))
+        let timeout = Duration::from_secs(1);
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .max_redirects(5)
+            .timeout_global(Some(timeout))
+            .build()
+            .into();
+        let response = agent
+            .get(&url)
             .call()
-            .map_err(|err| AttestationError::AttestationProvider(err.to_string()))?
-            .into_reader();
+            .map_err(|err| AttestationError::AttestationProvider(err.to_string()))?;
+        let mut response = response.into_body().into_reader();
         let mut body = Vec::new();
         response
             .read_to_end(&mut body)
@@ -742,11 +756,6 @@ impl AttestationVerifier {
 
     /// Verify an attestation, and return the expected measurements from the
     /// matching policy record.
-    ///
-    /// Endorsements are fetched and every freshness check is evaluated at
-    /// the wall clock. To re-verify archived evidence against the
-    /// endorsements it was originally verified with, see
-    /// [`Self::verify_attestation_archived`].
     pub async fn verify_attestation(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
@@ -870,15 +879,22 @@ impl AttestationVerifier {
         self.verify_attestation_blocking(attestation_exchange_message, expected_input_data, None)
     }
 
-    /// Re-verifies archived evidence against the endorsements a previous
-    /// verification reported, then checks the configured policy.
+    /// Reproduces a past verdict: re-verifies archived evidence against the
+    /// [`EndorsementSnapshot`] its original verification reported, then
+    /// checks the configured policy.
     ///
-    /// `endorsements` is the [`EndorsementSnapshot`] that verification
-    /// handed back in its [`VerifiedAttestation`]. The DCAP quote is
-    /// checked against that snapshot's collateral bundle, and on Azure
-    /// the AK certificate chain is checked as well, both at the
-    /// snapshot's instant rather than the wall clock. Same evidence,
-    /// same snapshot, same verdict, however long after the fact.
+    /// For a relying party that must reach the same answer as an earlier
+    /// one, such as a node replaying a log whose state depended on that
+    /// verdict, or a third party re-checking published evidence without
+    /// trusting whoever verified it first. It says whether the evidence was
+    /// valid when first verified, not whether the platform is trustworthy
+    /// now: freshness is judged at the snapshot's instant, so collateral
+    /// that has since expired or been revoked still passes. Live
+    /// verification belongs on [`Self::verify_attestation`].
+    ///
+    /// The snapshot's instant is taken as given: nothing in the evidence
+    /// attests to it, so a caller replaying someone else's archive should
+    /// know what pins it.
     ///
     /// Nothing whose answer can change over time is fetched. On GCP the
     /// recorded firmware endorsement is re-verified at the snapshot's
@@ -893,18 +909,20 @@ impl AttestationVerifier {
     /// firmware in the snapshot would remove these caveats and is left for
     /// a later change.
     ///
-    /// This is not a way to verify live evidence with collateral obtained
-    /// out of band: the snapshot pins the instant along with the bundle,
-    /// and a live verification belongs on [`Self::verify_attestation`].
-    /// A snapshot with no DCAP bundle fails with
-    /// [`DcapVerificationError::ArchivedWithoutDcapCollateral`] rather than
-    /// being completed by a fetch.
+    /// Fails with
+    /// [`AttestationError::ArchivedWithDynamicMeasurementPolicy`]
+    /// on a verifier with a dynamic measurement policy, and with
+    /// [`DcapVerificationError::ArchivedWithoutDcapCollateral`] on a
+    /// snapshot with no DCAP bundle.
     pub fn verify_attestation_archived(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
         expected_input_data: [u8; 64],
         endorsements: &EndorsementSnapshot,
     ) -> Result<Option<VerifiedAttestation>, AttestationError> {
+        if self.dynamic_measurement_policy.is_some() {
+            return Err(AttestationError::ArchivedWithDynamicMeasurementPolicy);
+        }
         self.verify_attestation_blocking(
             attestation_exchange_message,
             expected_input_data,
@@ -914,8 +932,8 @@ impl AttestationVerifier {
 
     /// The body shared by [`Self::verify_attestation_sync`] and
     /// [`Self::verify_attestation_archived`], which differ only in where
-    /// the DCAP leg gets its endorsements and whether the GCP provenance
-    /// lookup runs
+    /// the DCAP and GCP firmware legs get their endorsements and whether
+    /// the GCP provenance lookup runs
     fn verify_attestation_blocking(
         &self,
         attestation_exchange_message: AttestationExchangeMessage,
@@ -986,8 +1004,8 @@ impl AttestationVerifier {
                 };
                 if attestation_type == AttestationType::GcpTdx {
                     verified.endorsements.gcp_firmware = match archived {
-                        // The registry is unsigned and mutable: a replay could
-                        // only learn what it says now, so only a live
+                        // The registry is unsigned and mutable: a replay
+                        // could only learn what it says now, so only a live
                         // verification asks
                         None => {
                             self.gcp_provenance_checker.verify_provenance_sync(&quote)?;
@@ -1225,12 +1243,18 @@ fn log_attestation(attestation: &AttestationExchangeMessage) {
 /// Test whether it looks like we are running on GCP by hitting the metadata
 /// API
 fn running_on_gcp() -> Result<bool, AttestationError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(200)).build();
+    let timeout = Duration::from_millis(200);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_global(Some(timeout))
+        .build()
+        .into();
     let resp = agent.get(GCP_METADATA_API).call();
 
     if let Ok(r) = resp {
         return Ok(r.status() == 200 &&
-            r.header("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
+            r.headers().get("Metadata-Flavor").map(|v| v == "Google").unwrap_or(false));
     }
 
     Ok(false)
@@ -1302,7 +1326,6 @@ pub fn mock_platform_metadata(
     })
 }
 
-/// An error when generating or verifying an attestation
 /// The MRTD a DCAP quote reports
 fn dcap_mrtd(measurements: &MultiMeasurements) -> Result<[u8; 48], AttestationError> {
     match measurements {
@@ -1330,12 +1353,15 @@ fn archived_gcp_firmware_endorsement(
     Ok(Some(endorsement))
 }
 
+/// An error when generating or verifying an attestation
 #[derive(Error, Debug)]
 pub enum AttestationError {
     #[error("Certificate chain is empty")]
     NoCertificate,
+    #[cfg(feature = "azure-verifier")]
     #[error("X509 parse: {0}")]
     X509Parse(#[from] x509_parser::asn1_rs::Err<x509_parser::error::X509Error>),
+    #[cfg(feature = "azure-verifier")]
     #[error("X509: {0}")]
     X509(#[from] x509_parser::error::X509Error),
     #[error("Configuration mismatch - expected no remote attestation")]
@@ -1376,6 +1402,8 @@ pub enum AttestationError {
     Mock(String),
     #[error("Cannot retrieve platform metadata: {0}")]
     PlatformMetadata(#[from] PlatformError),
+    #[error("Archived verification cannot use a dynamic measurement policy")]
+    ArchivedWithDynamicMeasurementPolicy,
 }
 
 #[cfg(test)]
@@ -1385,10 +1413,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attestation_detection_does_not_panic() {
-        // We dont enforce what platform the test is run on, only that the
-        // function does not panic
-        let _ = AttestationGenerator::new_with_detection(None, None);
+    fn attestation_detection_completes_within_one_second() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        // Detection is synchronous, so run it on a separate thread to let
+        // the test fail promptly even if a probe blocks.
+        let worker = std::thread::spawn(move || {
+            // The platform and result may vary; require completion without
+            // a panic, as in the original detection test.
+            let _ = AttestationGenerator::new_with_detection(None, None);
+            sender.send(()).unwrap();
+        });
+
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("attestation detection panicked or did not complete within one second");
+        worker.join().expect("attestation detection panicked");
     }
 
     #[test]
@@ -1497,6 +1536,28 @@ mod tests {
         assert_eq!(replayed.measurements, live.measurements);
         assert_eq!(replayed.expected_measurements, live.expected_measurements);
         assert_eq!(replayed.endorsements, live.endorsements);
+    }
+
+    /// A dynamic policy can change between the original verification and
+    /// the replay, so the replay would not reproduce the verdict
+    #[test]
+    fn archived_replay_refuses_a_dynamic_measurement_policy() {
+        let input_data = [7u8; 64];
+        let quote = dcap::create_dcap_attestation(input_data).unwrap();
+        let attestation_evidence = AttestationEvidence {
+            quote,
+            platform: mock_platform_metadata(AttestationType::DcapTdx).unwrap(),
+        };
+        let mut verifier = AttestationVerifier::mock();
+        verifier.dynamic_measurement_policy = Some("measurements.json".to_string());
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let endorsements = EndorsementSnapshot::dcap(mock_tdx::mock_collateral(), now);
+
+        let err = verifier
+            .verify_attestation_archived(attestation_evidence.into(), input_data, &endorsements)
+            .unwrap_err();
+
+        assert!(matches!(err, AttestationError::ArchivedWithDynamicMeasurementPolicy), "{err:?}");
     }
 
     /// A replay of GCP evidence does not consult the provenance registry.

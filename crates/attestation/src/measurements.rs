@@ -26,10 +26,13 @@ use tracing::warn;
 use crate::{
     AttestationError,
     AttestationType,
+    HTTP_CONNECT_TIMEOUT,
     dcap::DcapVerificationError,
     gcp::{GcpFirmwareCache, fetch_firmware},
     trusted_firmware::firmware_for_mrtd,
 };
+
+const MEASUREMENT_POLICY_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Represents the measurement register types in a TDX quote
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -540,20 +543,31 @@ impl MeasurementPolicy {
     }
 
     /// Given either a URL or the path to a file, parse the measurement
-    /// policy from JSON
+    /// policy from JSON. HTTP redirects are not followed.
     pub async fn from_file_or_url(file_or_url: String) -> Result<Self, MeasurementFormatError> {
         #[cfg(test)]
         crate::install_test_crypto_provider();
 
-        if file_or_url.to_lowercase().trim_ascii().starts_with("https://") {
-            let measurements_json = reqwest::get(file_or_url).await?.bytes().await?;
-            Self::from_json_bytes(measurements_json.to_vec())
-        } else if file_or_url.to_lowercase().trim_ascii().starts_with("http://") {
-            if !Self::is_loopback_http_url(&file_or_url)? {
+        let normalized_source = file_or_url.to_lowercase();
+        let normalized_source = normalized_source.trim_ascii();
+        let is_https = normalized_source.starts_with("https://");
+        let is_http = normalized_source.starts_with("http://");
+        if is_https || is_http {
+            if is_http && !Self::is_loopback_http_url(&file_or_url)? {
                 return Err(MeasurementFormatError::InsecureHttpNotLoopback(file_or_url));
             }
 
-            let measurements_json = reqwest::get(file_or_url).await?.bytes().await?;
+            let response = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(MEASUREMENT_POLICY_FETCH_TIMEOUT)
+                .build()?
+                .get(file_or_url)
+                .send()
+                .await?;
+            if response.status().is_redirection() {
+                return Err(MeasurementFormatError::RedirectNotAllowed(response.status().as_u16()));
+            }
+            let measurements_json = response.bytes().await?;
             Self::from_json_bytes(measurements_json.to_vec())
         } else {
             Self::from_file(file_or_url.into()).await
@@ -561,7 +575,7 @@ impl MeasurementPolicy {
     }
 
     /// Synchronously parse a measurement policy from either a URL or a file
-    /// path.
+    /// path. HTTP redirects are not followed.
     pub fn from_file_or_url_sync(file_or_url: String) -> Result<Self, MeasurementFormatError> {
         #[cfg(test)]
         crate::install_test_crypto_provider();
@@ -575,12 +589,22 @@ impl MeasurementPolicy {
                 return Err(MeasurementFormatError::InsecureHttpNotLoopback(file_or_url));
             }
 
-            let response = ureq::get(&file_or_url)
-                .timeout(Duration::from_secs(10))
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .proxy(None)
+                .max_redirects(0)
+                .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+                .timeout_global(Some(MEASUREMENT_POLICY_FETCH_TIMEOUT))
+                .build()
+                .into();
+            let response = agent
+                .get(&file_or_url)
                 .call()
                 .map_err(|error| MeasurementFormatError::Ureq(Box::new(error)))?;
+            if response.status().is_redirection() {
+                return Err(MeasurementFormatError::RedirectNotAllowed(response.status().as_u16()));
+            }
             let mut measurements_json = Vec::new();
-            response.into_reader().read_to_end(&mut measurements_json)?;
+            response.into_body().into_reader().read_to_end(&mut measurements_json)?;
             Self::from_json_bytes(measurements_json)
         } else {
             Self::from_json_bytes(std::fs::read(file_or_url)?)
@@ -911,6 +935,8 @@ pub enum MeasurementFormatError {
     InvalidUri(#[from] InvalidUri),
     #[error("Refusing to load measurement policy over plain HTTP from non-loopback host: {0}")]
     InsecureHttpNotLoopback(String),
+    #[error("Refusing HTTP redirect when loading measurement policy (status {0})")]
+    RedirectNotAllowed(u16),
     #[error("Measurement entry for register '{0}' has both 'expected' and 'expected_any'")]
     BothExpectedAndExpectedAny(String),
     #[error("Measurement entry for register '{0}' has neither 'expected' nor 'expected_any'")]
@@ -1983,6 +2009,113 @@ mod tests {
             Err(MeasurementFormatError::InsecureHttpNotLoopback(url))
                 if url == "http://example.com/measurements.json"
         ));
+    }
+
+    /// The redirect body is itself a valid policy, so rejecting it also
+    /// checks that disabling redirects does not accidentally install it.
+    fn serve_policy_response(status: u16) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/measurements.json", listener.local_addr().unwrap());
+        let location = url.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = [0u8; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            let body = r#"[{"attestation_type":"none"}]"#;
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nLocation: {location}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            )
+            .unwrap();
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn policy_loader_rejects_redirects() {
+        for status in [301, 302, 303, 307, 308] {
+            let (url, server) = serve_policy_response(status);
+            let result = MeasurementPolicy::from_file_or_url(url).await;
+            server.join().unwrap();
+            assert!(
+                matches!(result, Err(MeasurementFormatError::RedirectNotAllowed(code)) if code == status)
+            );
+        }
+
+        let (url, server) = serve_policy_response(200);
+        let policy = MeasurementPolicy::from_file_or_url(url).await.unwrap();
+        server.join().unwrap();
+        assert!(!policy.has_remote_attestation());
+    }
+
+    /// Send headers and a partial body, then wait for the client to close
+    /// the connection. This checks that the deadline covers body reads.
+    fn serve_stalled_policy_body() -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/measurements.json", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // Also bound the fixture if a client loses its timeout.
+            stream.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+            let mut request = [0u8; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[")
+                .unwrap();
+            let _ = stream.read_to_end(&mut Vec::new());
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn policy_loader_times_out_on_stalled_body() {
+        let (url, server) = serve_stalled_policy_body();
+        let result =
+            tokio::time::timeout(Duration::from_secs(15), MeasurementPolicy::from_file_or_url(url))
+                .await
+                .expect("policy fetch exceeded its request timeout");
+        tokio::task::spawn_blocking(move || server.join().unwrap()).await.unwrap();
+        assert!(
+            matches!(result, Err(MeasurementFormatError::Reqwest(ref err)) if err.is_timeout()),
+            "expected a request timeout, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn sync_policy_loader_times_out_on_stalled_body() {
+        let (url, server) = serve_stalled_policy_body();
+        let result = MeasurementPolicy::from_file_or_url_sync(url);
+        server.join().unwrap();
+        assert!(
+            matches!(result, Err(MeasurementFormatError::Io(ref err)) if matches!(
+                err.get_ref().and_then(|source| source.downcast_ref::<ureq::Error>()),
+                Some(ureq::Error::Timeout(ureq::Timeout::Global))
+            )),
+            "expected a body read timeout, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn sync_policy_loader_rejects_redirects() {
+        for status in [301, 302, 303, 307, 308] {
+            let (url, server) = serve_policy_response(status);
+            let result = MeasurementPolicy::from_file_or_url_sync(url);
+            server.join().unwrap();
+            assert!(
+                matches!(result, Err(MeasurementFormatError::RedirectNotAllowed(code)) if code == status)
+            );
+        }
+
+        let (url, server) = serve_policy_response(200);
+        let policy = MeasurementPolicy::from_file_or_url_sync(url).unwrap();
+        server.join().unwrap();
+        assert!(!policy.has_remote_attestation());
     }
 
     #[tokio::test]

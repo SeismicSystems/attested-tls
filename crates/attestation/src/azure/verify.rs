@@ -3,26 +3,9 @@
 //! HCL report binding checks, vTPM quote verification, and AK certificate
 //! chain verification against pinned Azure roots.
 //!
-//! Three entry points, one per situation a relying party is in:
-//!
-//! - [verify_azure_attestation] is for a live handshake with an async
-//!   runtime to hand: it fetches whatever collateral the quote needs and
-//!   judges freshness at the wall clock.
-//! - [verify_azure_attestation_sync] is for a live handshake inside a
-//!   callback that cannot await, such as a rustls certificate verifier. It
-//!   can only read the PCCS cache, so the collateral has to be there
-//!   already; a miss fails and starts a background fetch for next time.
-//! - [verify_azure_attestation_archived] is for re-checking evidence long
-//!   after the fact, against the [EndorsementSnapshot] its original
-//!   verification reported. It fetches nothing and judges freshness at the
-//!   snapshot's instant, so the verdict is the same however much later it
-//!   runs.
-//!
-//! They share one body and differ only in the DCAP leg, which is where
-//! collateral and the instant come from. Parsing before it and the vTPM leg
-//! after it are identical, and the vTPM leg takes its instant from whatever
-//! the DCAP leg reported, so the archived path pins the AK chain check
-//! without any code of its own.
+//! The entry points mirror the three in [crate::dcap] and differ only in
+//! the DCAP leg. The vTPM leg takes its instant from the DCAP leg, so the
+//! archived path also pins the AK certificate chain check.
 use az_cvm_vtpm::{hcl, tdx};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE as BASE64_URL_SAFE};
 use dcap_qvl::verify::QuoteVerifier;
@@ -48,9 +31,6 @@ use crate::{
 
 /// The TD quote inside an Azure attestation, and the input data it has to
 /// commit to
-///
-/// Split from [VtpmLeg] so the three verification entry points share
-/// everything but the DCAP call
 struct PreparedTdQuote {
     tdx_quote_bytes: Vec<u8>,
     expected_tdx_input_data: [u8; 64],
@@ -65,10 +45,6 @@ struct VtpmLeg {
 }
 
 /// Verify a TDX attestation from Azure
-///
-/// Collateral for the TD quote comes from `pccs`, and both legs are held
-/// to the wall clock. To re-verify archived evidence, see
-/// [verify_azure_attestation_archived].
 pub async fn verify_azure_attestation(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
@@ -119,11 +95,9 @@ pub fn verify_azure_attestation_sync(
 /// Re-verify a TDX attestation from Azure against the endorsements a
 /// previous verification reported
 ///
-/// The TD quote is checked against the snapshot's collateral bundle and the
-/// AK certificate chain is checked at the snapshot's instant, so both legs
-/// are held to the same instant as the original verification and nothing
-/// is fetched. A snapshot with no DCAP bundle is refused; see
-/// [crate::dcap::verify_dcap_attestation_archived].
+/// Reproduces a past verdict rather than judging the platform now; see
+/// [crate::dcap] for when that is useful. Both legs are held to the
+/// snapshot's instant and nothing is fetched.
 pub fn verify_azure_attestation_archived(
     input: Vec<u8>,
     expected_input_data: [u8; 64],
@@ -170,12 +144,9 @@ fn prepare_azure_attestation(input: Vec<u8>) -> Result<(PreparedTdQuote, VtpmLeg
 
 /// The vTPM leg, after the DCAP leg has been verified
 ///
-/// Only the DCAP leg's endorsements travel upward: this platform is judged
-/// on the vTPM PCRs, not the TD quote's measurements. The AK certificate
-/// chain is checked at the instant the DCAP leg reported, so one instant is
-/// behind every freshness check. This leg fetches nothing — AK chain in the
-/// evidence, roots compiled in — so the DCAP leg's endorsements are the
-/// whole snapshot.
+/// The AK certificate chain is checked at the DCAP leg's instant, so one
+/// instant is behind every freshness check. This leg fetches nothing, so
+/// the DCAP leg's endorsements are the whole snapshot.
 fn finish_azure_attestation_verification(
     vtpm: VtpmLeg,
     expected_input_data: [u8; 64],
@@ -462,8 +433,7 @@ mod tests {
             verify_azure_attestation_archived(attestation_json, [0; 64], &endorsements, false)
                 .unwrap();
 
-        // The snapshot handed back is the one both legs were held to, so a
-        // replay of a replay reports the same thing
+        // The snapshot handed back is the one both legs were held to
         assert_eq!(reported, endorsements);
         assert!(matches!(measurements, MultiMeasurements::Azure(_)));
     }

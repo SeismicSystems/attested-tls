@@ -25,9 +25,14 @@ verification without attestation returns `None`.
 collateral bundle the verification consumed and the instant its freshness
 checks were evaluated at. Archived beside the evidence, it lets
 `AttestationVerifier::verify_attestation_archived` reproduce the verdict later,
-against that bundle and at that instant, without fetching anything whose answer
-could have changed since. This is for re-verifying archived evidence, not for
-verifying live evidence with collateral obtained out of band.
+for a relying party that must reach the same answer as an earlier one, such as
+a node replaying a log whose state depended on that verdict, or a third party
+re-checking published evidence without trusting whoever verified it first. It
+says whether the evidence was valid when first verified, not whether the
+platform is trustworthy now: collateral that has since expired or been revoked
+still passes. GCP evidence is re-checked against the firmware endorsement
+recorded in the snapshot, while the provenance lookup is skipped: Google's
+registry is unsigned and mutable, and the original verification consulted it.
 
 Matched expected measurements can be transported in an HTTP header using
 `ExpectedMeasurements::to_header_format` and reconstructed with
