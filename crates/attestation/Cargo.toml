@@ -11,8 +11,9 @@ keywords = ["attestation", "CVM", "TDX"]
 dcap-qvl = { workspace = true }
 pccs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "rt", "rt-multi-thread", "time"] }
-attest-types = { git = "https://github.com/easy-tee/attest.git", rev = "12f1e29f6ea63ecc2f80f39c2c1f1172720bcf24" }
-attest-measure = { git = "https://github.com/easy-tee/attest.git", rev = "12f1e29f6ea63ecc2f80f39c2c1f1172720bcf24" }
+# We point at our fork until https://github.com/Easy-TEE/attest/pull/29 gets merged.
+attest-types = { git = "https://github.com/SeismicSystems/attest", rev = "6d40d05ad33cc4ce85e43052e17c738f80d6c102" }
+attest-measure = { git = "https://github.com/SeismicSystems/attest", rev = "6d40d05ad33cc4ce85e43052e17c738f80d6c102" }
 anyhow = "1.0.100"
 tdx-attest = { git = "https://github.com/Dstack-TEE/dstack.git", rev = "4699c48ea3a7e568dff4f8792421299f27d50758" }
 hex = "0.4.3"
@@ -67,7 +68,8 @@ rustls = { workspace = true, default-features = false, features = ["aws_lc_rs"] 
 serde-saphyr = "0.0.22"
 
 [build-dependencies]
-attest-measure = { git = "https://github.com/easy-tee/attest.git", rev = "12f1e29f6ea63ecc2f80f39c2c1f1172720bcf24" }
+# We point at our fork until https://github.com/Easy-TEE/attest/pull/29 gets merged.
+attest-measure = { git = "https://github.com/SeismicSystems/attest", rev = "6d40d05ad33cc4ce85e43052e17c738f80d6c102" }
 serde_json = "1.0.145"
 
 [features]
